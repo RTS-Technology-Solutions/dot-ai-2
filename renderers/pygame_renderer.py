@@ -277,6 +277,8 @@ class PygameRenderer:
                 f"Energy: {dot['resources']['energy']:.0f}/{dot['resources']['max_energy']:.0f}",
                 f"Health: {dot['resources']['health']:.0f}/{dot['resources']['max_health']:.0f}",
                 f"Brain Capacity: {dot['brain']['capacity']:.0f}",
+                f"DNA Points: {dot['dna_points_used']:.1f}",
+                f"DNA Earned: {dot['brain']['earned_dna']:.1f}",
             ]
             
             for text in detail_texts:

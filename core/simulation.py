@@ -412,8 +412,8 @@ class DotSimulation:
                 self.current_gen_metrics['sexual_births'] += 1
                 
                 # Phase 4: Reward both parents for successful reproduction
-                parent1_id = data.get('parent1_id')
-                parent2_id = data.get('parent2_id')
+                parent1_id = data.get('parent_a_id')
+                parent2_id = data.get('parent_b_id')
                 
                 parent1 = next((d for d in self.dots if d.id == parent1_id), None)
                 parent2 = next((d for d in self.dots if d.id == parent2_id), None)
@@ -575,13 +575,8 @@ class DotSimulation:
                     energy_gained = food.consume(10)
                     
                     if energy_gained > 0:
-                        # Add energy to dot
-                        overflow = dot.resources.add_energy(energy_gained)
-                        
-                        # Overflow converts to DNA points (Phase 1: just track it)
-                        if overflow > 0:
-                            # In future: convert to DNA points
-                            pass
+                        # Use cascading eat system: energy → health → DNA
+                        dot.eat(energy_gained)
     
     def get_world_state(self):
         """
