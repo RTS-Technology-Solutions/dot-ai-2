@@ -247,6 +247,10 @@ class MetricsLogger:
             'total_births': simulation.total_births,
             'total_deaths': simulation.total_dots_died,
             'total_attacks': simulation.total_attacks,
+            
+            # Current generation stats (for real-time monitoring)
+            'gen_sexual_births': simulation.current_gen_metrics.get('sexual_births', 0),
+            'gen_asexual_births': simulation.current_gen_metrics.get('asexual_births', 0),
         }
         
         # Write as single-line JSON

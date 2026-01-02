@@ -276,27 +276,39 @@ class MetricsMonitor:
                 self.ax_generations.legend(loc='upper left')
         
         # Plot reproduction type breakdown (pie chart)
-        if self.generation_data:
+        # Use current generation data if available (from colony snapshots)
+        # Otherwise fall back to completed generation summaries
+        total_sexual = 0
+        total_asexual = 0
+        
+        # First try to get current generation data from latest colony snapshot
+        if self.colony_data:
+            latest = self.colony_data[-1]
+            total_sexual = latest.get('gen_sexual_births', 0)
+            total_asexual = latest.get('gen_asexual_births', 0)
+        
+        # If no current data, sum up all completed generations
+        if total_sexual == 0 and total_asexual == 0 and self.generation_data:
             total_sexual = sum(d.get('sexual_births', 0) for d in self.generation_data)
             total_asexual = sum(d.get('asexual_births', 0) for d in self.generation_data)
+        
+        total_births = total_sexual + total_asexual
+        
+        if total_births > 0:
+            sizes = [total_sexual, total_asexual]
+            labels = [f'Sexual\n{total_sexual}', f'Asexual\n{total_asexual}']
+            colors = ['#ff69b4', '#00ff00']
+            explode = (0.1, 0)
             
-            total_births = total_sexual + total_asexual
-            
-            if total_births > 0:
-                sizes = [total_sexual, total_asexual]
-                labels = [f'Sexual\n{total_sexual}', f'Asexual\n{total_asexual}']
-                colors = ['#ff69b4', '#00ff00']
-                explode = (0.1, 0)
-                
-                self.ax_reproduction.pie(sizes, explode=explode, labels=labels, colors=colors,
-                                        autopct='%1.1f%%', shadow=True, startangle=90,
-                                        textprops={'fontsize': 10, 'weight': 'bold'})
-            else:
-                # Show message when no births yet
-                self.ax_reproduction.text(0.5, 0.5, 'No births yet', 
-                                         transform=self.ax_reproduction.transAxes,
-                                         ha='center', va='center', fontsize=12,
-                                         color='gray', style='italic')
+            self.ax_reproduction.pie(sizes, explode=explode, labels=labels, colors=colors,
+                                    autopct='%1.1f%%', shadow=True, startangle=90,
+                                    textprops={'fontsize': 10, 'weight': 'bold'})
+        else:
+            # Show message when no births yet
+            self.ax_reproduction.text(0.5, 0.5, 'No births yet', 
+                                     transform=self.ax_reproduction.transAxes,
+                                     ha='center', va='center', fontsize=12,
+                                     color='gray', style='italic')
         
         # Update title with session info
         if self.colony_data:
