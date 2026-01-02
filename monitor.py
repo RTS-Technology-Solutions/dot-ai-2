@@ -136,25 +136,25 @@ class MetricsMonitor:
         """Configure axis labels and styling"""
         # Population chart
         self.ax_population.set_title('Colony Population Over Time', fontweight='bold')
-        self.ax_population.set_xlabel('Simulation Time (seconds)')
+        self.ax_population.set_xlabel('Session Time (seconds)')
         self.ax_population.set_ylabel('Population')
         self.ax_population.grid(True, alpha=0.3)
         
         # DNA chart
         self.ax_dna.set_title('DNA Points', fontweight='bold')
-        self.ax_dna.set_xlabel('Time (s)')
+        self.ax_dna.set_xlabel('Session Time (s)')
         self.ax_dna.set_ylabel('Avg DNA')
         self.ax_dna.grid(True, alpha=0.3)
         
         # Energy chart
         self.ax_energy.set_title('Colony Energy Over Time', fontweight='bold')
-        self.ax_energy.set_xlabel('Simulation Time (seconds)')
+        self.ax_energy.set_xlabel('Session Time (seconds)')
         self.ax_energy.set_ylabel('Energy')
         self.ax_energy.grid(True, alpha=0.3)
         
         # Food chart
         self.ax_food.set_title('Food Count', fontweight='bold')
-        self.ax_food.set_xlabel('Time (s)')
+        self.ax_food.set_xlabel('Session Time (s)')
         self.ax_food.set_ylabel('Food Items')
         self.ax_food.grid(True, alpha=0.3)
         
@@ -209,17 +209,28 @@ class MetricsMonitor:
         # Reconfigure after clearing
         self._configure_axes()
         
-        # Extract data for plotting
-        times = [d['simulation_time'] for d in self.colony_data]
+        # Extract data for plotting - USE SESSION_TIME for continuous timeline
+        times = [d['session_time'] for d in self.colony_data]
         populations = [d['population'] for d in self.colony_data]
         avg_dnas = [d['avg_dna'] for d in self.colony_data]
         avg_energies = [d['avg_energy'] for d in self.colony_data]
         total_energies = [d['total_energy'] for d in self.colony_data]
         food_counts = [d['food_count'] for d in self.colony_data]
+        generations = [d['generation'] for d in self.colony_data]
         
         # Plot population
         self.ax_population.plot(times, populations, 'cyan', linewidth=2, label='Population')
         self.ax_population.fill_between(times, populations, alpha=0.3, color='cyan')
+        
+        # Mark generation transitions
+        if len(self.colony_data) > 1:
+            prev_gen = generations[0]
+            for i, gen in enumerate(generations[1:], 1):
+                if gen != prev_gen:
+                    self.ax_population.axvline(x=times[i], color='white', linestyle='--', 
+                                              alpha=0.3, linewidth=1)
+                prev_gen = gen
+        
         self.ax_population.legend(loc='upper left')
         
         # Add current value annotation
@@ -266,10 +277,12 @@ class MetricsMonitor:
         
         # Plot reproduction type breakdown (pie chart)
         if self.generation_data:
-            total_sexual = sum(d['sexual_births'] for d in self.generation_data)
-            total_asexual = sum(d['asexual_births'] for d in self.generation_data)
+            total_sexual = sum(d.get('sexual_births', 0) for d in self.generation_data)
+            total_asexual = sum(d.get('asexual_births', 0) for d in self.generation_data)
             
-            if total_sexual + total_asexual > 0:
+            total_births = total_sexual + total_asexual
+            
+            if total_births > 0:
                 sizes = [total_sexual, total_asexual]
                 labels = [f'Sexual\n{total_sexual}', f'Asexual\n{total_asexual}']
                 colors = ['#ff69b4', '#00ff00']
@@ -278,6 +291,12 @@ class MetricsMonitor:
                 self.ax_reproduction.pie(sizes, explode=explode, labels=labels, colors=colors,
                                         autopct='%1.1f%%', shadow=True, startangle=90,
                                         textprops={'fontsize': 10, 'weight': 'bold'})
+            else:
+                # Show message when no births yet
+                self.ax_reproduction.text(0.5, 0.5, 'No births yet', 
+                                         transform=self.ax_reproduction.transAxes,
+                                         ha='center', va='center', fontsize=12,
+                                         color='gray', style='italic')
         
         # Update title with session info
         if self.colony_data:

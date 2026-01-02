@@ -253,10 +253,32 @@ class DotSimulation:
                     
                     if result['result'] == "HIT":
                         print(f"⚔️  Dot #{attacker.id} attacked Dot #{target.id} for {result['damage']:.1f} damage!")
+                        
+                        # Phase 4: Reward for successful attack
+                        reward = result['damage'] / 10.0  # Damage dealt = reward
+                        attacker.brain.add_reward('attack', reward)
+                        attacker.brain.add_memory('attack', {
+                            'target_id': target.id,
+                            'outcome': 'hit',
+                            'damage': result['damage']
+                        }, reward)
+                        
+                        # Target gets penalty for being hit
+                        penalty = -result['damage'] / 20.0
+                        target.brain.add_reward('defend', penalty)
+                        target.brain.add_memory('attacked_by', {
+                            'attacker_id': attacker.id,
+                            'damage': result['damage']
+                        }, penalty)
+                        
                         if self.logger:
                             self.logger.log_attack(attacker.id, target.id, result['damage'], True, self.time_elapsed)
                     else:
                         print(f"❌ Dot #{attacker.id} missed Dot #{target.id}!")
+                        
+                        # Phase 4: Small penalty for missing
+                        attacker.brain.add_reward('attack', -0.1)
+                        
                         if self.logger:
                             self.logger.log_attack(attacker.id, target.id, 0, False, self.time_elapsed)
                 
@@ -378,6 +400,8 @@ class DotSimulation:
         offspring_data.extend(sexual_offspring)
         
         # 4. Spawn offspring (both sexual and asexual)
+        population_before = len(self.dots)
+        
         for data in offspring_data:
             new_dot = self.spawn_dot(data['child_pos'], data['child_dna'])
             self.total_births += 1
@@ -386,6 +410,27 @@ class DotSimulation:
             # Track reproduction type
             if data.get('result') == 'OFFSPRING_SEXUAL':
                 self.current_gen_metrics['sexual_births'] += 1
+                
+                # Phase 4: Reward both parents for successful reproduction
+                parent1_id = data.get('parent1_id')
+                parent2_id = data.get('parent2_id')
+                
+                parent1 = next((d for d in self.dots if d.id == parent1_id), None)
+                parent2 = next((d for d in self.dots if d.id == parent2_id), None)
+                
+                if parent1:
+                    parent1.brain.add_reward('seek_mate', 2.0)  # Good reward for sexual reproduction
+                    parent1.brain.add_memory('reproduce_sexual', {
+                        'partner_id': parent2_id,
+                        'child_id': new_dot.id
+                    }, 2.0)
+                
+                if parent2:
+                    parent2.brain.add_reward('seek_mate', 2.0)
+                    parent2.brain.add_memory('reproduce_sexual', {
+                        'partner_id': parent1_id,
+                        'child_id': new_dot.id
+                    }, 2.0)
                 parent_ids = [data['parent_a_id'], data['parent_b_id']]
                 print(f"  💕 Dot #{data['parent_a_id']} + Dot #{data['parent_b_id']} → Offspring #{self.next_dot_id - 1} (sexual)")
                 
@@ -396,13 +441,43 @@ class DotSimulation:
                     
             elif data.get('result') == 'OFFSPRING_ASEXUAL':
                 self.current_gen_metrics['asexual_births'] += 1
-                parent_ids = [data.get('parent_id', -1)]
-                print(f"  🧬 Dot #{data.get('parent_id', '?')} → Offspring #{self.next_dot_id - 1} (asexual)")
+                parent_id = data.get('parent_id', -1)
+                parent_ids = [parent_id]
+                
+                # Phase 4: Reward parent for asexual reproduction (smaller than sexual)
+                parent = next((d for d in self.dots if d.id == parent_id), None)
+                if parent:
+                    parent.brain.add_reward('replicate', 1.5)  # Less than sexual
+                    parent.brain.add_memory('reproduce_asexual', {
+                        'child_id': new_dot.id
+                    }, 1.5)
+                
+                print(f"  🧬 Dot #{parent_id} → Offspring #{self.next_dot_id - 1} (asexual)")
                 
                 if self.logger:
                     self.logger.log_reproduction(parent_ids, new_dot.id, 'asexual', self.time_elapsed)
                     self.logger.log_dot_birth(new_dot.id, self.generation, parent_ids,
                                              data['child_dna'].get_total_points(), self.time_elapsed)
+        
+        # Phase 4: Population growth reward
+        # If population increased, all parents who contributed get bonus reward
+        population_after = len(self.dots)
+        if population_after > population_before:
+            population_increase = population_after - population_before
+            population_reward = population_increase * 0.5  # 0.5 reward per new dot
+            
+            for data in offspring_data:
+                if data.get('result') == 'OFFSPRING_SEXUAL':
+                    parent1 = next((d for d in self.dots if d.id == data.get('parent1_id')), None)
+                    parent2 = next((d for d in self.dots if d.id == data.get('parent2_id')), None)
+                    if parent1:
+                        parent1.brain.add_reward('population_growth', population_reward)
+                    if parent2:
+                        parent2.brain.add_reward('population_growth', population_reward)
+                elif data.get('result') == 'OFFSPRING_ASEXUAL':
+                    parent = next((d for d in self.dots if d.id == data.get('parent_id')), None)
+                    if parent:
+                        parent.brain.add_reward('population_growth', population_reward)
         
         # Update peak population
         if len(self.dots) > self.current_gen_metrics['peak_population']:
@@ -442,9 +517,9 @@ class DotSimulation:
             self.current_gen_metrics['deaths'] += died
             print(f"💀 {died} dot(s) died (Bodies → Food)")
         
-        # 7. Respawn food if critically low (reduced from 8 to 3)
+        # 7. Respawn food if critically low (scaled for larger environment)
         # Force dots to compete for scarce resources
-        if len(self.food) < 3:
+        if len(self.food) < 8:  # Increased from 3 to 8 for larger world
             self.spawn_food()
         
         # 8. Check for extinction

@@ -162,6 +162,18 @@ class PerceptionSystem:
         self.vision = VisionSense(dna_profile)
         self.detection = DetectionSense(dna_profile)
         self.dna = dna_profile
+        
+        # Density sensing radius
+        self.density_radius = self.calculate_density_radius()
+    
+    def calculate_density_radius(self):
+        """Calculate nearby dot density sensing radius from DNA"""
+        if not self.dna.nearby_dot_density.enabled:
+            return 0
+        
+        base = 100  # pixels
+        bonus = self.dna.nearby_dot_density.points * 12  # 12px per point
+        return base + bonus
     
     def perceive(self, dot_pos, dot_velocity, world_state):
         """
@@ -197,13 +209,28 @@ class PerceptionSystem:
             health_pct = dot.get('health', 0) / max(1, dot.get('max_health', 100))
             dot['can_reproduce'] = (energy_pct >= 0.4 and health_pct >= 0.7)
         
+        # Calculate nearby dot density if enabled
+        nearby_density = 0
+        density_dots_list = []
+        if self.density_radius > 0:
+            for dot in all_dots:
+                dx = dot['position'][0] - dot_pos[0]
+                dy = dot['position'][1] - dot_pos[1]
+                dist = math.sqrt(dx*dx + dy*dy)
+                if dist <= self.density_radius:
+                    nearby_density += 1
+                    density_dots_list.append(dot)
+        
         return {
             'dots': perceived_dots,
             'food': perceived_food,
             'vision_range': self.vision.distance,
             'vision_fov': self.vision.fov,
             'detection_dot_range': self.detection.dot_range,
-            'detection_food_range': self.detection.food_range
+            'detection_food_range': self.detection.food_range,
+            'nearby_density': nearby_density,  # Phase 4: Density awareness
+            'density_radius': self.density_radius,
+            'density_dots': density_dots_list  # Full list for advanced decisions
         }
     
     def get_debug_visuals(self, dot_pos):

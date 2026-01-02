@@ -149,10 +149,10 @@ def main():
     # ===== CONFIGURATION =====
     # Tune these parameters to change the experiment!
     config = {
-        'width': 1200,           # World width (pixels)
-        'height': 800,           # World height (pixels)
-        'initial_dots': 5,       # Starting population
-        'initial_food': 20,      # Starting food count
+        'width': 2400,           # World width (pixels) - DOUBLED for Phase 4
+        'height': 1600,          # World height (pixels) - DOUBLED for Phase 4
+        'initial_dots': 10,      # Starting population - DOUBLED for Phase 4
+        'initial_food': 40,      # Starting food count - DOUBLED for Phase 4
         # Note: More config options in DotSimulation class!
     }
     

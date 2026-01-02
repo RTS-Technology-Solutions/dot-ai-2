@@ -77,10 +77,15 @@ class Dot:
         # 5. Decide next action
         self.current_action = self.decide_action(perceived_world)
         
-        # 6. Execute action
+        # 6. Give small reward for taking action (Phase 4: Action-based learning)
+        # Idle gets no reward, all other actions get small positive reward
+        if self.current_action != 'idle':
+            self.brain.add_reward(self.current_action, 0.1)  # Small action reward
+        
+        # 7. Execute action
         offspring_result = self.execute_action(perceived_world, dt)
         
-        # 7. Update visuals
+        # 8. Update visuals
         self.vision_debug_circles = self.perception.get_debug_visuals(self.position)
         
         return offspring_result
@@ -201,10 +206,13 @@ class Dot:
         # 4. REPLICATE UTILITY (Asexual - high cost backup)
         # Higher when: high energy, high health, have replicate points, fewer dots nearby
         # Only triggers at 80% energy (fallback if no mate found)
+        # Phase 4: Use density sensor for better crowding awareness
         if replicate_points > 0:
             # Check if we have enough energy (need 80%)
             if energy_pct >= 0.8 and health_pct >= 0.7:
-                crowding_penalty = min(1.0, len(perceived_dots) * 0.2)
+                # Use density sensor if available, otherwise fall back to visible dots
+                nearby_density = perceived_world.get('nearby_density', len(perceived_dots))
+                crowding_penalty = min(1.0, nearby_density * 0.15)  # Less penalty, but still matters
                 replicate_utility = (replicate_points / 50.0) * energy_pct * health_pct * (1.0 - crowding_penalty) * 2.0  # Lower than mate-seeking
                 utilities['replicate'] = replicate_utility
             else:
@@ -260,10 +268,13 @@ class Dot:
         else:
             utilities['explore'] = 0.0
         
-        # 7. IDLE UTILITY (heavily penalized)
+        # 7. IDLE UTILITY (heavily penalized, especially in crowds)
         # Idling when resources are low = death sentence
+        # Idling in crowds = starvation trap (Phase 4 density awareness)
         # Severe penalties for lazy behavior
-        idle_penalty = health_urgency * 1.5 + hunger_pct * 2.0  # Heavy penalties
+        nearby_density = perceived_world.get('nearby_density', 0)
+        density_penalty = min(nearby_density * 0.3, 3.0)  # Up to 3.0 penalty for crowds
+        idle_penalty = health_urgency * 1.5 + hunger_pct * 2.0 + density_penalty
         utilities['idle'] = max(0.01, 0.3 - idle_penalty)  # Very low baseline, minimum 0.01
         
         # Pick action with highest utility
@@ -453,6 +464,16 @@ class Dot:
     def eat(self, food_energy: float):
         """Consume food and gain energy."""
         self.resources.eat(food_energy, self.brain)
+        
+        # Reward for successful eating (energy gained)
+        eating_reward = food_energy / 10.0  # Scale reward to food energy
+        self.brain.add_reward('eat', eating_reward)
+        
+        # Add memory of eating
+        self.brain.add_memory('eat', {
+            'energy_gained': food_energy,
+            'age': self.brain.age
+        }, eating_reward)
     
     def take_damage(self, damage: float, attacker_id: int) -> Dict[str, Any]:
         """

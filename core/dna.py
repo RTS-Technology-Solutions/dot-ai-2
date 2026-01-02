@@ -184,6 +184,11 @@ class DNAProfile:
         # 💪 DNA Strength: Can it identify strong vs weak opponents?
         # Crucial for smart hunting - avoid tough enemies, target weak ones
         
+        self.nearby_dot_density = Gene("nearby_dot_density", enabled=True, points=8)
+        # 🔢 Nearby Dot Density: Sense concentration of dots in area
+        # Helps avoid crowding, detect threats, find social groups
+        # Higher points = larger detection radius for density awareness
+        
         self.social_sense = Gene("social_sense", enabled=False, points=0)
         # 👥 Social Sense: Can it detect alliances/relationships? (Future)
         
