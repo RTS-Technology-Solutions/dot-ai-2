@@ -29,7 +29,7 @@ class Brain:
         self.memories = []  # List of interaction memories
         self.max_memories = 50  # Keep last 50 memories
         
-        # Reward tracking - Phase 4 intelligence
+        # Reward tracking - Phase 4 intelligence (DNA growth via eating)
         self.total_reward = 0.0  # Cumulative reward score
         self.action_rewards = {}  # Track rewards per action type
     
@@ -130,6 +130,8 @@ class Brain:
         """
         Track rewards for actions taken
         
+        Phase 4: Reward tracking for learning (DNA growth now via eating)
+        
         Args:
             action_type: Type of action ('attack', 'replicate', 'seek_food', etc.)
             reward_value: Reward/penalty amount
@@ -175,7 +177,8 @@ class Brain:
             'action_slots': self.action_slots,
             'memories_count': len(self.memories),
             'total_reward': self.total_reward,
-            'action_rewards': self.action_rewards.copy()
+            'action_rewards': self.action_rewards.copy(),
+            'earned_dna': self.dna.earned_dna_points
         }
     
     def __repr__(self):

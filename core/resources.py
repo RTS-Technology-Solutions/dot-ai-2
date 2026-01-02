@@ -75,10 +75,49 @@ class Resources:
     
     def add_health(self, amount):
         """
-        Heal health (from energy conversion)
+        Heal health (from energy overflow)
         Health cannot exceed max
+        Returns: Amount of overflow (for DNA conversion)
         """
+        old_health = self.health
         self.health = min(self.max_health, self.health + amount)
+        
+        # Return overflow amount
+        overflow = amount - (self.health - old_health)
+        return max(0.0, overflow)
+    
+    def eat(self, food_energy: float, brain):
+        """
+        Consume food with cascading priority system:
+        1. Fill energy first
+        2. Overflow goes to health
+        3. When both full, overflow converts to DNA points (10% conversion rate)
+        
+        Args:
+            food_energy: Energy value from food
+            brain: Brain reference for DNA growth
+        
+        Returns: Dict with energy_gained, health_gained, dna_gained
+        """
+        result = {'energy_gained': 0, 'health_gained': 0, 'dna_gained': 0}
+        
+        # Priority 1: Fill energy
+        energy_overflow = self.add_energy(food_energy)
+        result['energy_gained'] = food_energy - energy_overflow
+        
+        # Priority 2: Overflow goes to health (if any)
+        if energy_overflow > 0:
+            health_overflow = self.add_health(energy_overflow)
+            result['health_gained'] = energy_overflow - health_overflow
+            
+            # Priority 3: When both full, convert to DNA (10% conversion)
+            if health_overflow > 0:
+                # 10% of overflow becomes DNA points (prevents runaway growth)
+                dna_gain = health_overflow * 0.10
+                brain.dna.earn_dna_points(dna_gain)
+                result['dna_gained'] = dna_gain
+        
+        return result
     
     def is_alive(self):
         """Check if dot is alive (health > 0)"""

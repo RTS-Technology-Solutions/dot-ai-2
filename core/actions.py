@@ -70,6 +70,8 @@ class AttackAction(Action):
         damage = self.damage
         
         # Apply defense reduction if target is defending
+        # NOTE: Defending reduces damage but still loses health (just less)
+        # Defender also pays 3% max_energy/second while defending
         if hasattr(target_dot, 'is_defending') and target_dot.is_defending:
             defense_reduction = 0.3 + (target_dot.dna.defend.points * 0.01)
             damage *= (1.0 - min(0.8, defense_reduction))

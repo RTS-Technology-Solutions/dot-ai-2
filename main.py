@@ -149,8 +149,8 @@ def main():
     # ===== CONFIGURATION =====
     # Tune these parameters to change the experiment!
     config = {
-        'width': 2400,           # World width (pixels) - DOUBLED for Phase 4
-        'height': 1600,          # World height (pixels) - DOUBLED for Phase 4
+        'width': 3200,           # World width (pixels) - Wider for ultra-wide monitors
+        'height': 1200,          # World height (pixels) - Scaled for Phase 4
         'initial_dots': 10,      # Starting population - DOUBLED for Phase 4
         'initial_food': 40,      # Starting food count - DOUBLED for Phase 4
         # Note: More config options in DotSimulation class!

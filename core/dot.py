@@ -53,10 +53,11 @@ class Dot:
         # Energy costs
         IDLE_ENERGY_COST = 2.0  # per second
         MOVEMENT_ENERGY_COST = 1.0  # per second
-        DEFEND_ENERGY_COST = 3.0  # per second (3% of max per second, approximated)
         
         if self.is_defending:
-            self.resources.deplete_energy(DEFEND_ENERGY_COST * dt)
+            # Defending costs 3% of max energy per second
+            defend_cost = self.resources.max_energy * 0.03 * dt
+            self.resources.deplete_energy(defend_cost)
         elif is_moving:
             self.resources.deplete_energy((IDLE_ENERGY_COST + MOVEMENT_ENERGY_COST) * dt)
         else:
@@ -83,7 +84,7 @@ class Dot:
             self.brain.add_reward(self.current_action, 0.1)  # Small action reward
         
         # 7. Execute action
-        offspring_result = self.execute_action(perceived_world, dt)
+        offspring_result = self.execute_action(perceived_world, world_state, dt)
         
         # 8. Update visuals
         self.vision_debug_circles = self.perception.get_debug_visuals(self.position)
@@ -137,7 +138,20 @@ class Dot:
             
             for dot_info in perceived_dots:
                 enemy_health = dot_info.get('health', 100)
-                enemy_weakness = 1.0 - (enemy_health / 100.0)
+                enemy_energy = dot_info.get('energy', 100)
+                enemy_max_health = dot_info.get('max_health', 100)
+                enemy_state = dot_info.get('state', 'alive')
+                
+                # Calculate weakness based on BOTH health and energy
+                health_weakness = 1.0 - (enemy_health / max(1, enemy_max_health))
+                energy_weakness = 1.0 - (enemy_energy / max(1, dot_info.get('max_energy', 100)))
+                
+                # Starving dots are PRIME targets (huge multiplier)
+                if enemy_state == 'starving':
+                    weakness_score = 2.0  # 200% - easy kill, slow movement, dying
+                else:
+                    # Combine health and energy weakness (energy more important - indicates capability)
+                    weakness_score = (energy_weakness * 0.6 + health_weakness * 0.4)
                 
                 # Calculate expected food value from kill
                 if can_see_dna and 'perceived_dna_strength' in dot_info:
@@ -146,9 +160,8 @@ class Dot:
                 else:
                     food_value = 100  # Assume average
                 
-                # Score = (weakness * food_value) / 100
-                # Prioritize: weak enemies with high food value
-                score = (enemy_weakness * 0.7 + 0.3) * (food_value / 130.0)
+                # Score prioritizes: starving > low energy > low health, with food value consideration
+                score = weakness_score * (food_value / 130.0)
                 
                 if score > max_score:
                     max_score = score
@@ -289,7 +302,7 @@ class Dot:
         
         return best_action
     
-    def execute_action(self, perceived_world: Dict[str, Any], dt: float) -> Optional[DNAProfile]:
+    def execute_action(self, perceived_world: Dict[str, Any], world_state: Dict[str, Any], dt: float) -> Optional[DNAProfile]:
         """
         Execute the decided action.
         Returns offspring DNA if replication occurred, None otherwise.
@@ -299,7 +312,10 @@ class Dot:
             perceived_food = perceived_world.get('food', [])
             if perceived_food:
                 target_food = perceived_food[0]
-                self.move_toward(target_food['position'], dt)
+                # Debug: Log occasionally to check if movement is happening
+                if random.random() < 0.01:
+                    print(f"Dot #{self.id} seeking food at {target_food['position']}, current pos: {self.position}")
+                self.move_toward(target_food['position'], world_state, dt)
             return None
         
         elif self.current_action == "explore":
@@ -313,12 +329,12 @@ class Dot:
                     self.position[0] + math.cos(angle) * distance,
                     self.position[1] + math.sin(angle) * distance
                 ]
-            self.move_toward(self.target_position, dt)
+            self.move_toward(self.target_position, world_state, dt)
             return None
         
         elif self.current_action == "attack":
             self.is_defending = False
-            return self.execute_attack(perceived_world, dt)
+            return self.execute_attack(perceived_world, world_state, dt)
         
         elif self.current_action == "defend":
             self.execute_defend()
@@ -330,21 +346,21 @@ class Dot:
         
         elif self.current_action == "seek_mate":
             self.is_defending = False
-            return self.execute_seek_mate(perceived_world, dt)
+            return self.execute_seek_mate(perceived_world, world_state, dt)
         
         else:  # idle
             self.is_defending = False
             self.velocity = [0.0, 0.0]
             return None
     
-    def execute_attack(self, perceived_world: Dict[str, Any], dt: float) -> None:
+    def execute_attack(self, perceived_world: Dict[str, Any], world_state: Dict[str, Any], dt: float) -> None:
         """Execute attack action - move toward target."""
         if self.attack_target is not None:
             # Find target dot
             perceived_dots = perceived_world.get('dots', [])
             for dot_info in perceived_dots:
                 if dot_info['id'] == self.attack_target:
-                    self.move_toward(dot_info['position'], dt)
+                    self.move_toward(dot_info['position'], world_state, dt)
                     return
         
         # Target not found, idle
@@ -369,7 +385,7 @@ class Dot:
         
         return None
     
-    def execute_seek_mate(self, perceived_world: Dict[str, Any], dt: float) -> Optional[Dict[str, Any]]:
+    def execute_seek_mate(self, perceived_world: Dict[str, Any], world_state: Dict[str, Any], dt: float) -> Optional[Dict[str, Any]]:
         """
         Execute mate-seeking action - move toward mate and attempt sexual reproduction if in range.
         Returns offspring data or mate request if successful, None otherwise.
@@ -410,10 +426,10 @@ class Dot:
             }
         else:
             # Move toward mate
-            self.move_toward(mate_pos, dt)
+            self.move_toward(mate_pos, world_state, dt)
             return None
     
-    def move_toward(self, target: Tuple[float, float], dt: float):
+    def move_toward(self, target: Tuple[float, float], world_state: Dict[str, Any], dt: float):
         """Move toward a target position."""
         # Calculate direction
         dx = target[0] - self.position[0]
@@ -440,10 +456,11 @@ class Dot:
             self.position[0] += self.velocity[0] * dt
             self.position[1] += self.velocity[1] * dt
             
-            # ENFORCE BOUNDARIES - keep dots on screen
+            # ENFORCE BOUNDARIES - keep dots on screen (use dynamic world bounds)
             BOUNDARY_MARGIN = 10  # pixels from edge
-            MAX_X = 1200 - BOUNDARY_MARGIN
-            MAX_Y = 800 - BOUNDARY_MARGIN
+            bounds = world_state.get('bounds', {'width': 1200, 'height': 800})  # Fallback to old size
+            MAX_X = bounds['width'] - BOUNDARY_MARGIN
+            MAX_Y = bounds['height'] - BOUNDARY_MARGIN
             
             if self.position[0] < BOUNDARY_MARGIN:
                 self.position[0] = BOUNDARY_MARGIN
@@ -462,18 +479,24 @@ class Dot:
             self.velocity = [0.0, 0.0]
     
     def eat(self, food_energy: float):
-        """Consume food and gain energy."""
-        self.resources.eat(food_energy, self.brain)
+        """Consume food with cascading priority: energy → health → DNA."""
+        result = self.resources.eat(food_energy, self.brain)
         
         # Reward for successful eating (energy gained)
-        eating_reward = food_energy / 10.0  # Scale reward to food energy
+        eating_reward = result['energy_gained'] / 10.0
         self.brain.add_reward('eat', eating_reward)
         
         # Add memory of eating
         self.brain.add_memory('eat', {
-            'energy_gained': food_energy,
+            'energy_gained': result['energy_gained'],
+            'health_gained': result['health_gained'],
+            'dna_gained': result['dna_gained'],
             'age': self.brain.age
         }, eating_reward)
+        
+        # Log DNA growth when it happens
+        if result['dna_gained'] > 0:
+            print(f"🧬 Dot #{self.id} earned +{result['dna_gained']:.2f} DNA from eating (total: {self.dna.get_total_points():.1f})")
     
     def take_damage(self, damage: float, attacker_id: int) -> Dict[str, Any]:
         """

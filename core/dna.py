@@ -137,7 +137,8 @@ class DNAProfile:
         This mirrors real evolution: Complex traits evolve over time,
         they don't appear fully-formed in the first generation!
         """
-        self.total_points = total_points  # Total DNA points available
+        self.total_points = total_points  # Total DNA points available (starting budget)
+        self.earned_dna_points = 0  # DNA points earned during lifetime (Phase 4: Reward-based growth)
         
         # ===== BRAIN GENES: Cognitive Capacity =====
         # These determine how "smart" the dot is
@@ -270,14 +271,29 @@ class DNAProfile:
     
     def get_total_points(self):
         """
-        Get total DNA points allocated
-        (Alias for get_allocated_points for convenience)
+        Get total DNA budget (starting + earned)
         
-        CONFUSION WARNING:
-        This returns ALLOCATED points, not the total BUDGET!
-        For budget, use: dna.total_points
+        Phase 4: Dots earn DNA points during their lifetime based on successful actions.
+        Offspring inherit their parent's EARNED DNA total, creating evolutionary pressure
+        toward successful strategies.
+        
+        TOTAL DNA BUDGET = starting budget + earned points
         """
-        return self.get_allocated_points()
+        return self.total_points + self.earned_dna_points
+    
+    def earn_dna_points(self, amount):
+        """
+        Award DNA points for successful actions during lifetime.
+        
+        Phase 4: Reward-based DNA growth
+        - Dots that survive longer earn more DNA
+        - Successful actions grant DNA growth
+        - Offspring inherit parent's earned DNA total
+        
+        This creates evolutionary pressure: Successful parents → stronger offspring!
+        """
+        if amount > 0:
+            self.earned_dna_points += amount
     
     def get_available_points(self):
         """
@@ -360,6 +376,7 @@ class DNAProfile:
         """
         return {
             'total_points': self.total_points,
+            'earned_dna_points': self.earned_dna_points,
             'allocated_points': self.get_allocated_points(),
             'genes': {gene.name: gene.to_dict() for gene in self.get_all_genes()}
         }
@@ -378,6 +395,7 @@ class DNAProfile:
         - Clone champion genomes for testing
         """
         profile = cls(total_points=data['total_points'])
+        profile.earned_dna_points = data.get('earned_dna_points', 0)  # Phase 4: Restore earned DNA
         for gene_name, gene_data in data['genes'].items():
             if hasattr(profile, gene_name):
                 gene = getattr(profile, gene_name)
@@ -446,8 +464,9 @@ class DNAProfile:
         import random
         
         # STEP 1: Create child with averaged DNA budget
-        # Child inherits capacity between both parents
-        avg_points = (parent_a.total_points + parent_b.total_points) // 2
+        # Child inherits total capacity (starting + earned) from both parents
+        # Phase 4: This now includes DNA points parents earned during their lifetime!
+        avg_points = (parent_a.get_total_points() + parent_b.get_total_points()) // 2
         child_dna = DNAProfile(total_points=avg_points)
         
         # Get dictionaries of all parent genes for lookup
@@ -495,12 +514,13 @@ class DNAProfile:
         # STEP 3: Budget Validation & Scaling
         # If total gene points > available budget, scale down proportionally
         allocated = child_dna.get_allocated_points()
-        if allocated > child_dna.total_points:
+        total_budget = child_dna.get_total_points()  # Phase 4: Use total (starting + earned)
+        if allocated > total_budget:
             # PROPORTIONAL SCALING:
             # Example: 120 points allocated, 100 budget
             # scale_factor = 100/120 = 0.833
             # All genes multiplied by 0.833 to fit budget
-            scale_factor = child_dna.total_points / allocated
+            scale_factor = total_budget / allocated
             for gene in child_dna.get_all_genes():
                 if gene.enabled and gene.name != "eat":
                     gene.points = int(gene.points * scale_factor)
