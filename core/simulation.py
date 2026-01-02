@@ -1,6 +1,52 @@
 """
-Simulation Engine - Main Logic Loop
-Pure logic, no rendering code
+=====================================================================
+SIMULATION ENGINE - THE WORLD WHERE DOTS EVOLVE 🌍
+=====================================================================
+
+This is the "game engine" - the core logic that runs the entire
+ecosystem simulation. Think of it as the "laws of physics" for
+the dot world!
+
+WHAT THIS FILE DOES:
+- Creates and manages all dots (living agents)
+- Spawns and tracks food resources
+- Runs the update loop (like a game engine's tick())
+- Handles reproduction (sexual & asexual)
+- Manages combat and death
+- Triggers generational evolution
+- Tracks metrics for analysis
+
+KEY CONCEPTS:
+
+1. ENTITY MANAGEMENT:
+   - Dots: Living agents with DNA, energy, health
+   - Food: Resource items that dots consume for energy
+
+2. THE UPDATE LOOP (60 times per second):
+   - Dots perceive their environment (vision)
+   - Dots decide what to do (utility-based AI)
+   - Dots execute actions (move, eat, attack, reproduce)
+   - Energy drains, health changes
+   - Dead dots removed, food spawned
+
+3. NATURAL SELECTION:
+   - Dots with good DNA survive longer
+   - Survivors reproduce and pass on genes
+   - Weak strategies die out quickly
+   - Strong strategies spread through population
+
+4. GENERATIONAL EVOLUTION:
+   - If ALL dots die → Generation failed
+   - Simulation restarts with RANDOMIZED DNA
+   - Each restart tries different genetic strategies
+   - Over many generations, optimal builds emerge
+
+REAL-WORLD PARALLEL:
+This is like running Earth's evolution on fast-forward! We create
+the environment and rules, then let natural selection discover
+what works. We don't TELL dots how to behave - they figure it out
+through millions of tiny survival decisions over many generations.
+=====================================================================
 """
 
 import random
@@ -12,52 +58,99 @@ from .dna import DNAProfile
 
 class DotSimulation:
     """
-    Main simulation engine
-    - Manages dots and food
-    - Updates world state
-    - Handles spawning and cleanup
-    - Exports state for renderers
+    =====================================================================
+    SIMULATION ENGINE: The Living World
+    =====================================================================
+    
+    This class is the "universe" where dots live, compete, and evolve.
+    It manages:
+    - Time (delta time updates)
+    - Space (world bounds, positions)
+    - Life (dots, food, births, deaths)
+    - Evolution (generations, DNA inheritance)
+    
+    THE SIMULATION LOOP:
+    1. update() called 60 times/second
+    2. Each dot perceives → decides → acts
+    3. Resources consumed, energy drained
+    4. Reproduction happens (if conditions met)
+    5. Deaths processed
+    6. Metrics tracked
+    7. Repeat!
+    
+    GENERATIONAL CYCLE:
+    Gen 1: Random DNA → Some dots die, some survive → Survivors reproduce
+    Gen 2: Inherited DNA → Better strategies emerge → Weak strategies removed
+    Gen N: Optimal DNA discovered → Dominant strategy stabilizes
+    
+    EXTINCTION & RESTART:
+    If all dots die:
+    - Current generation deemed "failed"
+    - Print generation summary (survival time, deaths, etc.)
+    - Randomize DNA and spawn new generation
+    - Evolution tries again with different strategies!
+    
+    This teaches: THERE IS NO SINGLE "CORRECT" DNA PROFILE!
+    Success depends on environment, competition, and randomness.
+    =====================================================================
     """
     
     def __init__(self, config):
+        """
+        Initialize the simulation world
+        
+        CONFIG DICTIONARY contains all tunable parameters:
+        - width, height: World dimensions (pixels)
+        - initial_dots: Starting population
+        - initial_food: Starting food count
+        - food_spawn_rate: Food per second
+        - max_food: Food capacity limit
+        """
         self.config = config
         
-        # Entities
-        self.dots = []
-        self.food = []
+        # ===== ENTITY LISTS =====
+        # These lists hold all living/existing entities
+        self.dots = []   # All living dots (agents)
+        self.food = []   # All food items (resources)
         
-        # World bounds
+        # ===== WORLD BOUNDARIES =====
+        # Define the physical space (like a Minecraft world border)
         self.width = config.get('width', 800)
         self.height = config.get('height', 600)
         
-        # State
-        self.generation = 1
-        self.time_elapsed = 0.0
-        self.paused = False
-        self.restarting = False  # Prevent recursive restarts
+        # ===== SIMULATION STATE =====
+        self.generation = 1       # Current generation number
+        self.time_elapsed = 0.0   # Seconds since generation started
+        self.paused = False       # Is simulation paused?
+        self.restarting = False   # Prevent recursive restarts (safety)
         
-        # Counters
+        # ===== ID COUNTERS =====
+        # Unique IDs for every entity ever created (debugging!)
         self.next_dot_id = 0
         self.next_food_id = 0
         
-        # Stats
+        # ===== LIFETIME STATISTICS =====
+        # Track totals across ALL generations
         self.total_dots_created = 0
         self.total_dots_died = 0
         self.total_food_consumed = 0
         self.total_births = 0
         self.total_attacks = 0
         
-        # Metrics tracking
-        self.metrics_log = []  # List of generation summaries
+        # ===== METRICS TRACKING =====
+        # Collect data for analysis and research
+        self.metrics_log = []  # History of all generation summaries
+        
+        # Per-generation metrics (reset each generation)
         self.current_gen_metrics = {
-            'births': 0,
-            'deaths': 0,
-            'sexual_births': 0,
-            'asexual_births': 0,
-            'combat_kills': 0,
-            'starvation_deaths': 0,
-            'peak_population': 0,
-            'avg_dna_snapshots': []
+            'births': 0,               # Total offspring born
+            'deaths': 0,               # Total dots died
+            'sexual_births': 0,        # Births via sexual reproduction
+            'asexual_births': 0,       # Births via cloning
+            'combat_kills': 0,         # Deaths from combat
+            'starvation_deaths': 0,    # Deaths from hunger
+            'peak_population': 0,      # Max dots alive at once
+            'avg_dna_snapshots': []    # DNA evolution over time
         }
     
     def initialize(self):
