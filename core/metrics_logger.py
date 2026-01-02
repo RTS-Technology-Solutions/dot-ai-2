@@ -171,12 +171,6 @@ class MetricsLogger:
             simulation: DotSimulation instance
             force: Force logging even if interval not reached
         """
-        # Check if enough time has passed
-        if not force and simulation.time_elapsed - self.last_colony_metric_time < self.colony_metric_interval:
-            return
-        
-        self.last_colony_metric_time = simulation.time_elapsed
-        
         # Calculate metrics
         dots = simulation.dots
         food = simulation.food
@@ -185,6 +179,14 @@ class MetricsLogger:
         population = len(dots)
         if population == 0:
             return  # No dots to measure
+        
+        # Check if enough time has passed
+        # Handle generation resets where time_elapsed goes back to 0
+        time_since_last = simulation.time_elapsed - self.last_colony_metric_time
+        if not force and time_since_last < self.colony_metric_interval and time_since_last >= 0:
+            return
+        
+        self.last_colony_metric_time = simulation.time_elapsed
         
         # DNA statistics
         total_dna = sum(d.dna.get_total_points() for d in dots)
@@ -209,7 +211,7 @@ class MetricsLogger:
         
         # Food availability
         food_count = len(food)
-        total_food_energy = sum(f.energy for f in food)
+        total_food_energy = sum(f.energy_value for f in food)
         
         metrics = {
             'session_time': self.get_session_time(),
@@ -372,6 +374,10 @@ class MetricsLogger:
             'session_time': round(self.get_session_time(), 2)
         })
         self.generation_summary_file.flush()
+        
+        # Reset colony metrics timer for new generation
+        # (since simulation time_elapsed will reset to 0)
+        self.last_colony_metric_time = 0.0
         
         # Also log as event
         self.log_event('GENERATION_END', summary, summary.get('survival_time', 0))

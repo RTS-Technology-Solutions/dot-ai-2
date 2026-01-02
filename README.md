@@ -180,17 +180,97 @@ This simulation embodies the **scientific method**:
 
 2. **Install Dependencies:**
    ```bash
-   pip install pygame numpy
+   pip install -r requirements.txt
    ```
+   This installs:
+   - `pygame` & `numpy` - Core simulation
+   - `matplotlib` & `pandas` - Metrics & monitoring
 
 3. **Run the Simulation:**
    ```bash
    python main.py
    ```
 
+4. **Monitor Live (Optional - in another terminal):**
+   ```bash
+   python monitor.py
+   ```
+   Opens a real-time dashboard with 6 live charts tracking colony evolution!
+
 ### Controls
 - **SPACE**: Pause/Resume simulation
 - **ESC**: Quit
+
+---
+
+## 📊 Real-Time Metrics & Monitoring
+
+### 🎯 Automated Data Logging
+
+Every simulation run automatically logs **all events and metrics** to structured files:
+
+**What Gets Logged:**
+- 📝 **Event Stream**: Every birth, death, attack, and reproduction
+- 📈 **Colony Metrics**: Population, DNA, energy, food (sampled every second)
+- 📊 **Generation Summaries**: Survival times, reproduction breakdown, evolution trends
+- 🔬 **Individual Tracking**: Each dot's lifetime, offspring count, death cause
+
+**Log Location:**
+```
+logs/
+└── YYYYMMDD_HHMMSS/              # Timestamped session folder
+    ├── events.jsonl              # Event stream
+    ├── colony_metrics.jsonl      # Real-time metrics
+    ├── generation_summary.csv    # Per-generation stats
+    └── dot_lifetimes.csv         # Individual dot data
+```
+
+### 📈 Live Monitoring Dashboard
+
+Run the real-time monitor in a separate terminal to visualize evolution as it happens:
+
+```bash
+python monitor.py
+```
+
+**Dashboard Features:**
+- 🌍 **Colony Population Over Time** - Live population graph
+- 🧬 **DNA Points Evolution** - Track genetic improvements
+- ⚡ **Energy Levels** - Monitor colony resource health
+- 🍎 **Food Availability** - See resource scarcity
+- 📊 **Generation Survival Times** - Compare generation success
+- 💕 **Reproduction Breakdown** - Sexual vs asexual pie chart
+
+**Monitor Commands:**
+```bash
+python monitor.py                # Auto-detect latest session
+python monitor.py SESSION_NAME   # Monitor specific session
+python monitor.py --list         # List all sessions
+python monitor.py --refresh 500  # Update every 500ms
+```
+
+The dashboard updates live (every 1 second by default) and continues tracking even after generations restart!
+
+### 🔬 Programmatic Data Analysis
+
+Analyze your simulation data with Python:
+
+```python
+import pandas as pd
+
+# Load generation data
+df = pd.read_csv('logs/LATEST_SESSION/generation_summary.csv')
+
+# Find best generation
+best = df.loc[df['survival_time'].idxmax()]
+print(f"Best generation: {best['generation']} ({best['survival_time']:.1f}s)")
+
+# Sexual vs asexual reproduction rates
+sexual_rate = df['sexual_births'].sum() / df['total_births'].sum() * 100
+print(f"Sexual reproduction: {sexual_rate:.1f}%")
+```
+
+See [METRICS_LOGGING_GUIDE.md](METRICS_LOGGING_GUIDE.md) for complete documentation and analysis examples.
 
 ---
 
@@ -225,18 +305,21 @@ When a generation dies, you'll see a **Generation Summary**:
 ---
 
 ## 🎯 Experiment Ideas - Become an AI Researcher!
-
-### Beginner Experiments:
-
-1. **Food Scarcity Test**
-   - Reduce `initial_food` in config
-   - **Question**: Do aggressive or defensive strategies win?
-
-2. **Combat Effectiveness**
-   - Watch which dots survive fights
-   - **Question**: Is attacking worth the energy cost?
-
-3. **Reproduction Comparison**
+    # Genetic system
+│   ├── dot.py              # Agent AI and decision-making
+│   ├── simulation.py       # World logic and evolution
+│   ├── actions.py          # Combat and reproduction
+│   ├── senses.py           # Vision and detection
+│   ├── brain.py            # Memory and cognition
+│   ├── resources.py        # Energy and health
+│   ├── food.py             # Food entities
+│   └── metrics_logger.py   # Data logging system
+├── renderers/
+│   └── pygame_renderer.py  # Visualization
+├── logs/                   # Simulation data (auto-created)
+├── main.py                 # Entry point
+├── monitor.py              # Real-time dashboard
+└── README.md     tion Comparison**
    - Count sexual vs asexual births
    - **Question**: Which strategy dominates?
 
@@ -326,7 +409,9 @@ dot-ai-2/
 
 **4. Emergent Complexity:**
 - Simple utility calculations → complex strategic behavior
-- No hardcoded "AI personalities" - they emerge naturally
+- No hardcoded
+- Matplotlib (charting)
+- Pandas (data analysis) "AI personalities" - they emerge naturally
 
 ---
 

@@ -112,7 +112,7 @@ class MetricsMonitor:
         # Create figure with dark background
         plt.style.use('dark_background')
         self.fig = plt.figure(figsize=(16, 10))
-        self.fig.suptitle('🧬 DOT AI - COLONY EVOLUTION MONITOR', fontsize=16, fontweight='bold')
+        self.fig.suptitle('DOT AI - COLONY EVOLUTION MONITOR', fontsize=16, fontweight='bold')
         
         # Create grid layout (3 rows, 3 columns)
         gs = gridspec.GridSpec(3, 3, figure=self.fig, hspace=0.3, wspace=0.3)
@@ -135,37 +135,37 @@ class MetricsMonitor:
     def _configure_axes(self):
         """Configure axis labels and styling"""
         # Population chart
-        self.ax_population.set_title('🌍 Colony Population Over Time', fontweight='bold')
+        self.ax_population.set_title('Colony Population Over Time', fontweight='bold')
         self.ax_population.set_xlabel('Simulation Time (seconds)')
         self.ax_population.set_ylabel('Population')
         self.ax_population.grid(True, alpha=0.3)
         
         # DNA chart
-        self.ax_dna.set_title('🧬 DNA Points', fontweight='bold')
+        self.ax_dna.set_title('DNA Points', fontweight='bold')
         self.ax_dna.set_xlabel('Time (s)')
         self.ax_dna.set_ylabel('Avg DNA')
         self.ax_dna.grid(True, alpha=0.3)
         
         # Energy chart
-        self.ax_energy.set_title('⚡ Colony Energy Over Time', fontweight='bold')
+        self.ax_energy.set_title('Colony Energy Over Time', fontweight='bold')
         self.ax_energy.set_xlabel('Simulation Time (seconds)')
         self.ax_energy.set_ylabel('Energy')
         self.ax_energy.grid(True, alpha=0.3)
         
         # Food chart
-        self.ax_food.set_title('🍎 Food Count', fontweight='bold')
+        self.ax_food.set_title('Food Count', fontweight='bold')
         self.ax_food.set_xlabel('Time (s)')
         self.ax_food.set_ylabel('Food Items')
         self.ax_food.grid(True, alpha=0.3)
         
         # Generations chart
-        self.ax_generations.set_title('📊 Generation Survival Times', fontweight='bold')
+        self.ax_generations.set_title('Generation Survival Times', fontweight='bold')
         self.ax_generations.set_xlabel('Generation Number')
         self.ax_generations.set_ylabel('Survival Time (seconds)')
         self.ax_generations.grid(True, alpha=0.3)
         
         # Reproduction chart
-        self.ax_reproduction.set_title('💕 Reproduction Types', fontweight='bold')
+        self.ax_reproduction.set_title('Reproduction Types', fontweight='bold')
     
     def read_new_data(self):
         """Read new data from log files (tail behavior)"""
@@ -286,7 +286,7 @@ class MetricsMonitor:
             sim_time = latest.get('simulation_time', 0)
             
             self.fig.suptitle(
-                f'🧬 DOT AI - COLONY EVOLUTION MONITOR | Gen {gen} | Time: {sim_time:.1f}s',
+                f'DOT AI - COLONY EVOLUTION MONITOR | Gen {gen} | Time: {sim_time:.1f}s',
                 fontsize=16, fontweight='bold'
             )
     
@@ -345,7 +345,7 @@ def list_sessions(log_dir="logs"):
 
 
 def get_latest_session(log_dir="logs"):
-    """Get the most recent logging session"""
+    """Get the most recent logging session based on file activity"""
     log_path = Path(log_dir)
     
     if not log_path.exists():
@@ -356,8 +356,15 @@ def get_latest_session(log_dir="logs"):
     if not sessions:
         return None
     
-    # Sort by modification time (most recent first)
-    latest = max(sessions, key=lambda x: x.stat().st_mtime)
+    # Get the most recently modified file in each session directory
+    def get_latest_file_time(session_dir):
+        files = list(session_dir.glob('*'))
+        if not files:
+            return session_dir.stat().st_mtime
+        return max(f.stat().st_mtime for f in files)
+    
+    # Sort by most recent file activity (not directory modification time)
+    latest = max(sessions, key=get_latest_file_time)
     return latest
 
 
