@@ -38,15 +38,15 @@ class DNAProfile:
         self.total_points = total_points
         
         # BRAIN GENES
-        self.brain_memory = Gene("memory", enabled=True, points=10)
-        self.brain_sense_slots = Gene("sense_slots", enabled=True, points=12)
-        self.brain_action_slots = Gene("action_slots", enabled=True, points=8)
+        self.brain_memory = Gene("memory", enabled=True, points=8)  # Reduced from 10
+        self.brain_sense_slots = Gene("sense_slots", enabled=True, points=10)  # Reduced from 12
+        self.brain_action_slots = Gene("action_slots", enabled=True, points=7)  # Reduced from 8
         
         # SENSE GENES
         self.vision_distance = Gene("vision_distance", enabled=True, points=15)
         self.vision_fov = Gene("vision_fov", enabled=True, points=15)
-        self.dot_detection = Gene("dot_detection", enabled=True, points=8)
-        self.food_detection = Gene("food_detection", enabled=True, points=12)
+        self.dot_detection = Gene("dot_detection", enabled=True, points=7)  # Reduced from 8
+        self.food_detection = Gene("food_detection", enabled=True, points=10)  # Reduced from 12
         self.power_detection = Gene("power_detection", enabled=False, points=0)
         self.food_amount_detection = Gene("food_amount_detection", enabled=False, points=0)
         self.dna_strength_detection = Gene("dna_strength_detection", enabled=False, points=0)
@@ -54,9 +54,9 @@ class DNAProfile:
         
         # ACTION GENES
         self.movement_speed = Gene("movement_speed", enabled=True, points=8)
-        self.movement_max_energy = Gene("movement_max_energy", enabled=True, points=12)
-        self.defend = Gene("defend", enabled=False, points=0)
-        self.attack = Gene("attack", enabled=False, points=0)
+        self.movement_max_energy = Gene("movement_max_energy", enabled=True, points=10)  # Reduced from 12
+        self.defend = Gene("defend", enabled=True, points=5)  # Enable combat
+        self.attack = Gene("attack", enabled=True, points=5)  # Enable combat
         self.eat = Gene("eat", enabled=True, points=0)  # Always enabled, no cost
         self.replicate = Gene("replicate", enabled=False, points=0)
         self.revive = Gene("revive", enabled=False, points=0)

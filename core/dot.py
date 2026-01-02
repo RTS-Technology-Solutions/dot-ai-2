@@ -92,12 +92,17 @@ class Dot:
         # Get current state
         energy_pct = self.resources.energy / self.resources.max_energy
         health_pct = self.resources.health / self.resources.max_health
-        hunger_pct = self.resources.hunger / 100.0
+        hunger_pct = self.resources.hunger
         
         # Get DNA points
         attack_points = self.dna.get_gene_value('attack')
         defend_points = self.dna.get_gene_value('defend')
         replicate_points = self.dna.get_gene_value('replicate')
+        
+        # Health urgency - penalize if losing health
+        health_urgency = 0.0
+        if health_pct < 0.9:  # Any health loss
+            health_urgency = (1.0 - health_pct) * 2.0  # 0.2 at 90% health, 2.0 at 0% health
         
         # Initialize utilities
         utilities = {}
@@ -176,8 +181,23 @@ class Dot:
         else:
             utilities['replicate'] = 0.0
         
-        # 5. IDLE UTILITY (baseline)
-        utilities['idle'] = 1.0
+        # 5. EXPLORE UTILITY (when nothing visible)
+        # Small reward for movement to encourage exploration
+        perceived_food = perceived_world.get('food', [])
+        perceived_dots = perceived_world.get('dots', [])
+        nothing_visible = len(perceived_food) == 0 and len(perceived_dots) == 0
+        
+        if nothing_visible:
+            # Encourage exploration when blind
+            explore_utility = 2.0 + (hunger_pct * 3.0)  # 2-5 utility
+            utilities['explore'] = explore_utility
+        else:
+            utilities['explore'] = 0.0
+        
+        # 6. IDLE UTILITY (penalized baseline)
+        # Penalty for idling - gets worse with health loss
+        idle_penalty = health_urgency * 0.5  # Reduce idle utility when hurt
+        utilities['idle'] = max(0.1, 1.0 - idle_penalty)  # Never below 0.1
         
         # Pick action with highest utility
         best_action = max(utilities, key=utilities.get)
@@ -195,6 +215,20 @@ class Dot:
             if perceived_food:
                 target_food = perceived_food[0]
                 self.move_toward(target_food['position'], dt)
+            return None
+        
+        elif self.current_action == "explore":
+            self.is_defending = False
+            # Random walk - pick a direction and move
+            if self.target_position is None or random.random() < 0.05:  # 5% chance to pick new direction each frame
+                # Pick random point in world
+                angle = random.random() * 2 * math.pi
+                distance = 200  # Explore in 200px radius
+                self.target_position = [
+                    self.position[0] + math.cos(angle) * distance,
+                    self.position[1] + math.sin(angle) * distance
+                ]
+            self.move_toward(self.target_position, dt)
             return None
         
         elif self.current_action == "attack":
@@ -267,8 +301,18 @@ class Dot:
         distance = math.sqrt(dx*dx + dy*dy)
         
         if distance > 1.0:
+            # Base speed from DNA
+            base_speed = 50  # pixels/second
+            bonus_speed = self.dna.get_gene_value('movement_speed') * 5
+            speed = base_speed + bonus_speed
+            
+            # Urgency multipliers
+            if self.resources.is_starving():
+                speed *= 0.1  # 10% speed when starving (weak)
+            elif self.resources.hunger > 0.7:
+                speed *= 1.5  # 50% faster when very hungry (desperate)
+            
             # Normalize and apply speed
-            speed = self.dna.get_gene_value('movement_speed') * 0.5  # 0-25 pixels/sec (max 50 points)
             self.velocity[0] = (dx / distance) * speed
             self.velocity[1] = (dy / distance) * speed
             
