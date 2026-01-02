@@ -121,7 +121,9 @@ LET THE EVOLUTION BEGIN! 🚀🧬✨
 """
 
 import sys
+from datetime import datetime
 from core.simulation import DotSimulation
+from core.metrics_logger import MetricsLogger
 from renderers.pygame_renderer import PygameRenderer
 
 
@@ -154,9 +156,14 @@ def main():
         # Note: More config options in DotSimulation class!
     }
     
+    # Initialize metrics logger
+    session_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    print(f"📊 Starting logging session: {session_name}")
+    logger = MetricsLogger(session_name=session_name)
+    
     # Initialize simulation (pure logic)
     print("⚙️  Initializing simulation...")
-    simulation = DotSimulation(config)
+    simulation = DotSimulation(config, logger=logger)
     simulation.initialize()
     
     # Initialize renderer (pure visuals)
@@ -197,6 +204,9 @@ def main():
     print("=" * 60)
     print("🛑 SIMULATION ENDED")
     print(f"⏱️  Total time: {simulation.time_elapsed:.1f} seconds")
+    # Close logger
+    logger.close()
+    
     print(f"📊 Dots created: {simulation.total_dots_created}")
     print(f"💀 Dots died: {simulation.total_dots_died}")
     print(f"🍎 Food consumed: {simulation.total_food_consumed}")

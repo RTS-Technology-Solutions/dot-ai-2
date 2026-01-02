@@ -54,6 +54,7 @@ import math
 from .dot import Dot
 from .food import Food
 from .dna import DNAProfile
+from .metrics_logger import MetricsLogger
 
 
 class DotSimulation:
@@ -95,7 +96,7 @@ class DotSimulation:
     =====================================================================
     """
     
-    def __init__(self, config):
+    def __init__(self, config, logger=None):
         """
         Initialize the simulation world
         
@@ -105,8 +106,13 @@ class DotSimulation:
         - initial_food: Starting food count
         - food_spawn_rate: Food per second
         - max_food: Food capacity limit
+        
+        Args:
+            config: Configuration dictionary
+            logger: MetricsLogger instance (optional, for data collection)
         """
         self.config = config
+        self.logger = logger
         
         # ===== ENTITY LISTS =====
         # These lists hold all living/existing entities
@@ -247,8 +253,12 @@ class DotSimulation:
                     
                     if result['result'] == "HIT":
                         print(f"⚔️  Dot #{attacker.id} attacked Dot #{target.id} for {result['damage']:.1f} damage!")
+                        if self.logger:
+                            self.logger.log_attack(attacker.id, target.id, result['damage'], True, self.time_elapsed)
                     else:
                         print(f"❌ Dot #{attacker.id} missed Dot #{target.id}!")
+                        if self.logger:
+                            self.logger.log_attack(attacker.id, target.id, 0, False, self.time_elapsed)
                 
                 # Clear target
                 attacker.attack_target = None
@@ -369,17 +379,30 @@ class DotSimulation:
         
         # 4. Spawn offspring (both sexual and asexual)
         for data in offspring_data:
-            self.spawn_dot(data['child_pos'], data['child_dna'])
+            new_dot = self.spawn_dot(data['child_pos'], data['child_dna'])
             self.total_births += 1
             self.current_gen_metrics['births'] += 1
             
             # Track reproduction type
             if data.get('result') == 'OFFSPRING_SEXUAL':
                 self.current_gen_metrics['sexual_births'] += 1
+                parent_ids = [data['parent_a_id'], data['parent_b_id']]
                 print(f"  💕 Dot #{data['parent_a_id']} + Dot #{data['parent_b_id']} → Offspring #{self.next_dot_id - 1} (sexual)")
+                
+                if self.logger:
+                    self.logger.log_reproduction(parent_ids, new_dot.id, 'sexual', self.time_elapsed)
+                    self.logger.log_dot_birth(new_dot.id, self.generation, parent_ids, 
+                                             data['child_dna'].get_total_points(), self.time_elapsed)
+                    
             elif data.get('result') == 'OFFSPRING_ASEXUAL':
                 self.current_gen_metrics['asexual_births'] += 1
+                parent_ids = [data.get('parent_id', -1)]
                 print(f"  🧬 Dot #{data.get('parent_id', '?')} → Offspring #{self.next_dot_id - 1} (asexual)")
+                
+                if self.logger:
+                    self.logger.log_reproduction(parent_ids, new_dot.id, 'asexual', self.time_elapsed)
+                    self.logger.log_dot_birth(new_dot.id, self.generation, parent_ids,
+                                             data['child_dna'].get_total_points(), self.time_elapsed)
         
         # Update peak population
         if len(self.dots) > self.current_gen_metrics['peak_population']:
@@ -398,6 +421,17 @@ class DotSimulation:
         # 6. Remove dead dots and convert to food
         dead_dots = [d for d in self.dots if not d.resources.is_alive()]
         for dot in dead_dots:
+            # Determine death cause
+            death_cause = "starvation" if dot.resources.energy <= 0 else "combat"
+            if death_cause == "starvation":
+                self.current_gen_metrics['starvation_deaths'] += 1
+            else:
+                self.current_gen_metrics['combat_kills'] += 1
+            
+            # Log death
+            if self.logger:
+                self.logger.log_dot_death(dot.id, death_cause, self.time_elapsed)
+            
             self.dot_to_food(dot)
         
         before_dots = len(self.dots)
@@ -405,6 +439,7 @@ class DotSimulation:
         died = before_dots - len(self.dots)
         if died > 0:
             self.total_dots_died += died
+            self.current_gen_metrics['deaths'] += died
             print(f"💀 {died} dot(s) died (Bodies → Food)")
         
         # 7. Respawn food if critically low (reduced from 8 to 3)
@@ -415,6 +450,11 @@ class DotSimulation:
         # 8. Check for extinction
         if len(self.dots) == 0 and not self.restarting:
             self.restarting = True
+            
+            # Log extinction
+            if self.logger:
+                self.logger.log_extinction(self.generation, self.time_elapsed)
+            
             print("")
             print("=" * 60)
             print("💀 EXTINCTION - All dots have died!")
@@ -430,6 +470,10 @@ class DotSimulation:
         
         # 9. Update time
         self.time_elapsed += delta_time
+        
+        # 10. Log colony metrics periodically
+        if self.logger:
+            self.logger.log_colony_metrics(self)
     
     def check_eating(self):
         """
@@ -515,6 +559,10 @@ class DotSimulation:
         }
         self.metrics_log.append(summary)
         
+        # Log to external logger
+        if self.logger:
+            self.logger.log_generation_end(summary)
+        
         # Print generation summary
         self.print_generation_summary(summary)
         
@@ -555,6 +603,17 @@ class DotSimulation:
             # Spawn dot
             dot = Dot(self.next_dot_id, pos, dna)
             self.dots.append(dot)
+            
+            # Log birth
+            if self.logger:
+                self.logger.log_dot_birth(
+                    self.next_dot_id,
+                    self.generation,
+                    [],  # No parents (new generation)
+                    dna.get_total_points(),
+                    self.time_elapsed
+                )
+            
             self.next_dot_id += 1
             self.total_dots_created += 1
         
