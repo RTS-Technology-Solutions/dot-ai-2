@@ -1,6 +1,9 @@
 # ignore history directory
 .history/
 
+# Workspace file
+*.code-workspace
+
 # Ignore simulation files
 .pkl
 
