@@ -120,24 +120,90 @@ class DefendAction(Action):
 
 
 class ReplicateAction(Action):
-    """Asexual reproduction"""
+    """Reproduction - both sexual and asexual modes"""
     
     def __init__(self, dna_profile):
         self.dna = dna_profile
-        super().__init__("replicate", 0)  # Cost is 80% of max energy
+        super().__init__("replicate", 0)  # Cost varies by mode
     
-    def can_execute(self, dot, world_state):
-        """Can replicate if gene enabled and energy > 80%"""
+    def can_execute_asexual(self, dot):
+        """Can do asexual reproduction if energy > 80%"""
         if not self.dna.replicate.enabled:
             return False
         
         threshold = dot.resources.max_energy * 0.8
         return dot.resources.energy >= threshold and dot.resources.health > 70
     
-    def execute(self, dot, world_state, delta_time):
-        """Create offspring with mutated DNA"""
+    def can_execute_sexual(self, dot):
+        """Can do sexual reproduction if energy > 40%"""
+        if not self.dna.replicate.enabled:
+            return False
+        
+        threshold = dot.resources.max_energy * 0.4
+        return dot.resources.energy >= threshold and dot.resources.health > 70
+    
+    def can_execute(self, dot, world_state):
+        """Can replicate (either mode) if gene enabled and minimum energy met"""
+        return self.can_execute_sexual(dot) or self.can_execute_asexual(dot)
+    
+    def execute(self, dot, world_state, delta_time, mate=None):
+        """Create offspring - sexual if mate provided, asexual otherwise"""
         from .dna import DNAProfile
         from .dot import Dot
+        
+        if mate is not None:
+            # SEXUAL REPRODUCTION
+            return self.execute_sexual(dot, mate, world_state)
+        else:
+            # ASEXUAL REPRODUCTION
+            return self.execute_asexual(dot, world_state)
+    
+    def execute_sexual(self, parent_a, parent_b, world_state):
+        """Sexual reproduction with DNA crossover"""
+        from .dna import DNAProfile
+        
+        # Energy cost: 40% each parent
+        cost_a = parent_a.resources.max_energy * 0.4
+        cost_b = parent_b.resources.max_energy * 0.4
+        
+        parent_a.resources.deplete_energy(cost_a)
+        parent_b.resources.deplete_energy(cost_b)
+        
+        # Health factor for offspring quality (0.8-1.0)
+        health_factor_a = 0.8 + (parent_a.resources.health / parent_a.resources.max_health) * 0.2
+        health_factor_b = 0.8 + (parent_b.resources.health / parent_b.resources.max_health) * 0.2
+        avg_health_factor = (health_factor_a + health_factor_b) / 2.0
+        
+        # Create offspring DNA via crossover
+        child_dna = DNAProfile.crossover(parent_a.dna, parent_b.dna)
+        
+        # Apply minor mutations (5% chance per gene, smaller changes)
+        child_dna = self.mutate_dna(child_dna, mutation_rate=0.05, mutation_amount=2)
+        
+        # Spawn position (between parents)
+        mid_x = (parent_a.position[0] + parent_b.position[0]) / 2.0
+        mid_y = (parent_a.position[1] + parent_b.position[1]) / 2.0
+        offset_x = random.randint(-20, 20)
+        offset_y = random.randint(-20, 20)
+        child_pos = [mid_x + offset_x, mid_y + offset_y]
+        
+        # Clamp to world bounds
+        bounds = world_state.get('bounds', {'width': 1200, 'height': 800})
+        child_pos[0] = max(50, min(bounds['width'] - 50, child_pos[0]))
+        child_pos[1] = max(50, min(bounds['height'] - 50, child_pos[1]))
+        
+        return {
+            "result": "OFFSPRING_SEXUAL",
+            "child_dna": child_dna,
+            "child_pos": child_pos,
+            "parent_a_id": parent_a.id,
+            "parent_b_id": parent_b.id,
+            "health_factor": avg_health_factor
+        }
+    
+    def execute_asexual(self, dot, world_state):
+        """Asexual reproduction (clone with mutations)"""
+        from .dna import DNAProfile
         
         # Energy cost: 80%
         cost = dot.resources.max_energy * 0.8
@@ -157,21 +223,20 @@ class ReplicateAction(Action):
         child_pos[1] = max(50, min(bounds['height'] - 50, child_pos[1]))
         
         return {
-            "result": "OFFSPRING",
+            "result": "OFFSPRING_ASEXUAL",
             "child_dna": child_dna,
-            "child_pos": child_pos
+            "child_pos": child_pos,
+            "parent_id": dot.id
         }
     
-    def mutate_dna(self, parent_dna):
+    def mutate_dna(self, parent_dna, mutation_rate=0.1, mutation_amount=5):
         """Create mutated copy of parent DNA"""
         from .dna import DNAProfile
         
         # Clone parent DNA
         child_dna = parent_dna.clone()
         
-        # Mutation rate: 10% chance per gene
-        mutation_rate = 0.1
-        mutation_amount = 5  # +/- 5 points
+        # Mutation parameters (configurable)
         
         for gene in child_dna.get_all_genes():
             # Skip eat gene (always enabled, no cost)

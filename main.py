@@ -62,14 +62,6 @@ def main():
         # Render (visuals)
         state = simulation.get_state()
         actual_delta = renderer.render(state)
-        
-        # Check if all dots died
-        if len(simulation.dots) == 0:
-            print("")
-            print("💀 All dots have died!")
-            print(f"⏱️  Survival time: {simulation.time_elapsed:.1f} seconds")
-            print("")
-            # Could auto-restart here in future
     
     # Cleanup
     print("")

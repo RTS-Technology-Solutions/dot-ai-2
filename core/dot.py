@@ -36,6 +36,7 @@ class Dot:
         self.current_action = "idle"
         self.is_defending = False
         self.attack_target = None
+        self.mate_target = None  # ID of dot being sought for mating
         
         # Visual debugging
         self.vision_debug_circles = []
@@ -120,29 +121,52 @@ class Dot:
             utilities['seek_food'] = 0.0
         
         # 2. ATTACK UTILITY
-        # Higher when: enemy weak, self strong, have attack points
+        # GOAL: Attack when hungry AND enemy will provide good food
+        # Attack = Risk (energy cost, damage) vs Reward (food from kill)
         perceived_dots = perceived_world.get('dots', [])
-        if attack_points > 0 and perceived_dots:
-            weakest_enemy = None
-            min_enemy_health = float('inf')
+        if attack_points > 0 and perceived_dots and hunger_pct > 0.3:  # Only attack if moderately hungry
+            best_target = None
+            max_score = -float('inf')
+            
+            can_see_dna = self.dna.get_gene_value('dna_strength_detection') > 0
             
             for dot_info in perceived_dots:
                 enemy_health = dot_info.get('health', 100)
-                if enemy_health < min_enemy_health:
-                    min_enemy_health = enemy_health
-                    weakest_enemy = dot_info
-            
-            if weakest_enemy:
-                enemy_weakness = 1.0 - (min_enemy_health / 100.0)
-                own_strength = health_pct
-                attack_utility = enemy_weakness * (attack_points / 50.0) * own_strength * 5.0
+                enemy_weakness = 1.0 - (enemy_health / 100.0)
                 
-                # Only attack if reasonably healthy
-                if health_pct < 0.5:
-                    attack_utility *= 0.2
+                # Calculate expected food value from kill
+                if can_see_dna and 'perceived_dna_strength' in dot_info:
+                    enemy_dna = dot_info['perceived_dna_strength']
+                    food_value = 30 + enemy_dna
+                else:
+                    food_value = 100  # Assume average
+                
+                # Score = (weakness * food_value) / 100
+                # Prioritize: weak enemies with high food value
+                score = (enemy_weakness * 0.7 + 0.3) * (food_value / 130.0)
+                
+                if score > max_score:
+                    max_score = score
+                    best_target = dot_info
+            
+            if best_target:
+                # Attack utility based on:
+                # - Own strength (health)
+                # - Hunger level (need food)
+                # - Attack points (capability)
+                # - Target score (weakness + food value)
+                own_strength = health_pct
+                hunger_motivation = hunger_pct * 1.5  # More hungry = more motivated
+                attack_utility = max_score * (attack_points / 50.0) * own_strength * hunger_motivation * 3.0
+                
+                # Reduce if low health (risky)
+                if health_pct < 0.3:
+                    attack_utility *= 0.1  # Very risky when weak
+                elif health_pct < 0.6:
+                    attack_utility *= 0.5  # Somewhat risky
                 
                 utilities['attack'] = attack_utility
-                self.attack_target = weakest_enemy['id']
+                self.attack_target = best_target['id']
             else:
                 utilities['attack'] = 0.0
         else:
@@ -150,57 +174,107 @@ class Dot:
             self.attack_target = None
         
         # 3. DEFEND UTILITY
-        # Higher when: low health, enemies nearby, have defend points
+        # GOAL: Only defend when ACTIVELY under threat (being attacked OR very weak)
+        # Defending costs energy and prevents food-seeking
         if defend_points > 0:
             danger_level = 0.0
             
-            # Danger from visible enemies
+            # REAL danger: Multiple enemies nearby AND low health
             threat_count = len(perceived_dots)
-            if threat_count > 0:
-                danger_level = min(1.0, threat_count * 0.3)
             
-            # Danger from low health
-            if health_pct < 0.5:
-                danger_level = max(danger_level, 1.0 - health_pct)
+            # Only defend if:
+            # 1. Surrounded (3+ enemies) OR
+            # 2. Low health (<40%) with enemies nearby
+            if threat_count >= 3:
+                danger_level = min(1.0, (threat_count - 2) * 0.4)  # Ramps up with crowd
+            elif health_pct < 0.4 and threat_count > 0:
+                danger_level = (1.0 - health_pct) * 0.8  # Desperate defense when weak
             
-            defend_utility = danger_level * (defend_points / 50.0) * (1 + threat_count * 0.5)
-            utilities['defend'] = defend_utility
+            if danger_level > 0:
+                defend_utility = danger_level * (defend_points / 50.0) * 2.0
+                utilities['defend'] = defend_utility
+            else:
+                utilities['defend'] = 0.0
         else:
             utilities['defend'] = 0.0
         
-        # 4. REPLICATE UTILITY
+        # 4. REPLICATE UTILITY (Asexual - high cost backup)
         # Higher when: high energy, high health, have replicate points, fewer dots nearby
+        # Only triggers at 80% energy (fallback if no mate found)
         if replicate_points > 0:
             # Check if we have enough energy (need 80%)
             if energy_pct >= 0.8 and health_pct >= 0.7:
                 crowding_penalty = min(1.0, len(perceived_dots) * 0.2)
-                replicate_utility = (replicate_points / 50.0) * energy_pct * health_pct * (1.0 - crowding_penalty) * 3.0
+                replicate_utility = (replicate_points / 50.0) * energy_pct * health_pct * (1.0 - crowding_penalty) * 2.0  # Lower than mate-seeking
                 utilities['replicate'] = replicate_utility
             else:
                 utilities['replicate'] = 0.0
         else:
             utilities['replicate'] = 0.0
         
-        # 5. EXPLORE UTILITY (when nothing visible)
-        # Small reward for movement to encourage exploration
+        # 5. SEEK MATE UTILITY (Sexual - preferred, lower cost)
+        # Higher when: moderate energy (40%+), healthy, potential mates nearby
+        # Preferred over asexual due to lower cost and genetic diversity
+        if replicate_points > 0:
+            if energy_pct >= 0.4 and health_pct >= 0.7:
+                # Look for potential mates (exclude self!)
+                potential_mates = [d for d in perceived_dots 
+                                  if d.get('id') != self.id and  # Don't mate with self!
+                                  d.get('health', 0) > 70 and 
+                                  d.get('can_reproduce', False)]
+                
+                if potential_mates:
+                    # Stronger utility than asexual (lower cost = more appealing)
+                    mate_count_bonus = min(1.0, len(potential_mates) * 0.3)  # More mates = better
+                    mate_utility = (replicate_points / 50.0) * energy_pct * health_pct * (1.0 + mate_count_bonus) * 4.0
+                    utilities['seek_mate'] = mate_utility
+                    
+                    # Choose best mate (prioritize health, proximity)
+                    best_mate = max(potential_mates, key=lambda m: m.get('health', 0))
+                    self.mate_target = best_mate['id']
+                else:
+                    utilities['seek_mate'] = 0.0
+                    self.mate_target = None
+            else:
+                utilities['seek_mate'] = 0.0
+                self.mate_target = None
+        else:
+            utilities['seek_mate'] = 0.0
+            self.mate_target = None
+        
+        # Filter out self from perceived dots
         perceived_food = perceived_world.get('food', [])
-        perceived_dots = perceived_world.get('dots', [])
+        perceived_dots = [d for d in perceived_world.get('dots', []) if d.get('id') != self.id]
+        
+        # 6. EXPLORE UTILITY (when nothing visible)
+        # Small reward for movement to encourage exploration
         nothing_visible = len(perceived_food) == 0 and len(perceived_dots) == 0
         
         if nothing_visible:
-            # Encourage exploration when blind
-            explore_utility = 2.0 + (hunger_pct * 3.0)  # 2-5 utility
+            # Encourage exploration when blind - desperate when low resources
+            explore_base = 3.0  # Higher baseline
+            hunger_boost = hunger_pct * 5.0  # Strong hunger motivation (0-5)
+            health_boost = health_urgency * 2.0  # Panic when hurt (0-2)
+            explore_utility = explore_base + hunger_boost + health_boost  # 3-10 utility
             utilities['explore'] = explore_utility
         else:
             utilities['explore'] = 0.0
         
-        # 6. IDLE UTILITY (penalized baseline)
-        # Penalty for idling - gets worse with health loss
-        idle_penalty = health_urgency * 0.5  # Reduce idle utility when hurt
-        utilities['idle'] = max(0.1, 1.0 - idle_penalty)  # Never below 0.1
+        # 7. IDLE UTILITY (heavily penalized)
+        # Idling when resources are low = death sentence
+        # Severe penalties for lazy behavior
+        idle_penalty = health_urgency * 1.5 + hunger_pct * 2.0  # Heavy penalties
+        utilities['idle'] = max(0.01, 0.3 - idle_penalty)  # Very low baseline, minimum 0.01
         
         # Pick action with highest utility
         best_action = max(utilities, key=utilities.get)
+        
+        # Debug: Print utilities occasionally
+        if random.random() < 0.008:  # ~0.8% chance per frame
+            print(f"Dot #{self.id} utilities: ", end="")
+            for action, util in sorted(utilities.items(), key=lambda x: -x[1])[:3]:
+                print(f"{action}={util:.2f} ", end="")
+            print(f"-> {best_action}")
         
         return best_action
     
@@ -243,6 +317,10 @@ class Dot:
             self.is_defending = False
             return self.execute_replicate()
         
+        elif self.current_action == "seek_mate":
+            self.is_defending = False
+            return self.execute_seek_mate(perceived_world, dt)
+        
         else:  # idle
             self.is_defending = False
             self.velocity = [0.0, 0.0]
@@ -269,29 +347,60 @@ class Dot:
     
     def execute_replicate(self) -> Optional[Dict[str, Any]]:
         """
-        Execute replication action.
+        Execute asexual replication action.
         Returns offspring data if successful, None otherwise.
         """
-        result = self.action_manager.replicate.execute(self)
+        world_state = {'bounds': {'width': 1200, 'height': 800}}
+        result = self.action_manager.replicate.execute(self, world_state, 0.0, mate=None)
         
-        if result['success']:
-            # Deduct energy cost
-            self.resources.energy = result['parent_energy_after']
-            
-            # Calculate offset for child position (spawn nearby)
-            angle = random.random() * 2 * math.pi
-            distance = 30  # spawn 30 pixels away
-            child_x = self.position[0] + math.cos(angle) * distance
-            child_y = self.position[1] + math.sin(angle) * distance
-            
-            # Return offspring data in expected format
-            return {
-                'result': 'OFFSPRING',
-                'child_dna': result['offspring_dna'],
-                'child_pos': [child_x, child_y]
-            }
+        if result and result.get('result') == 'OFFSPRING_ASEXUAL':
+            return result
         
         return None
+    
+    def execute_seek_mate(self, perceived_world: Dict[str, Any], dt: float) -> Optional[Dict[str, Any]]:
+        """
+        Execute mate-seeking action - move toward mate and attempt sexual reproduction if in range.
+        Returns offspring data or mate request if successful, None otherwise.
+        """
+        if self.mate_target is None:
+            return None
+        
+        # Find mate in perceived dots
+        perceived_dots = perceived_world.get('dots', [])
+        mate_info = None
+        
+        for dot_info in perceived_dots:
+            if dot_info['id'] == self.mate_target:
+                mate_info = dot_info
+                break
+        
+        if mate_info is None:
+            # Mate not visible, idle
+            self.velocity = [0.0, 0.0]
+            return None
+        
+        # Calculate distance to mate
+        mate_pos = mate_info['position']
+        dx = mate_pos[0] - self.position[0]
+        dy = mate_pos[1] - self.position[1]
+        distance = math.sqrt(dx*dx + dy*dy)
+        
+        # Check if in mating range (30 pixels)
+        MATING_RANGE = 30.0
+        
+        if distance <= MATING_RANGE:
+            # In range! Signal ready for mating
+            # Return mate_request that simulation will handle
+            return {
+                'result': 'MATE_REQUEST',
+                'mate_id': self.mate_target,
+                'requester_id': self.id
+            }
+        else:
+            # Move toward mate
+            self.move_toward(mate_pos, dt)
+            return None
     
     def move_toward(self, target: Tuple[float, float], dt: float):
         """Move toward a target position."""
@@ -319,6 +428,25 @@ class Dot:
             # Update position
             self.position[0] += self.velocity[0] * dt
             self.position[1] += self.velocity[1] * dt
+            
+            # ENFORCE BOUNDARIES - keep dots on screen
+            BOUNDARY_MARGIN = 10  # pixels from edge
+            MAX_X = 1200 - BOUNDARY_MARGIN
+            MAX_Y = 800 - BOUNDARY_MARGIN
+            
+            if self.position[0] < BOUNDARY_MARGIN:
+                self.position[0] = BOUNDARY_MARGIN
+                self.velocity[0] = 0  # Stop at boundary
+            elif self.position[0] > MAX_X:
+                self.position[0] = MAX_X
+                self.velocity[0] = 0
+            
+            if self.position[1] < BOUNDARY_MARGIN:
+                self.position[1] = BOUNDARY_MARGIN
+                self.velocity[1] = 0
+            elif self.position[1] > MAX_Y:
+                self.position[1] = MAX_Y
+                self.velocity[1] = 0
         else:
             self.velocity = [0.0, 0.0]
     

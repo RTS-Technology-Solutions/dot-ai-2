@@ -161,6 +161,7 @@ class PerceptionSystem:
     def __init__(self, dna_profile):
         self.vision = VisionSense(dna_profile)
         self.detection = DetectionSense(dna_profile)
+        self.dna = dna_profile
     
     def perceive(self, dot_pos, dot_velocity, world_state):
         """
@@ -182,6 +183,19 @@ class PerceptionSystem:
         # Combine (union of visible and detected)
         perceived_dots = self._unique_entities(visible_dots + detected_dots)
         perceived_food = self._unique_entities(visible_food + detected_food)
+        
+        # Add DNA strength perception if enabled
+        if self.dna.dna_strength_detection.enabled:
+            for dot in perceived_dots:
+                if 'dna_points_used' in dot:
+                    dot['perceived_dna_strength'] = dot['dna_points_used']
+        
+        # Add can_reproduce flag for mate selection
+        # Dot can reproduce if it has 40%+ energy and 70%+ health
+        for dot in perceived_dots:
+            energy_pct = dot.get('energy', 0) / max(1, dot.get('max_energy', 100))
+            health_pct = dot.get('health', 0) / max(1, dot.get('max_health', 100))
+            dot['can_reproduce'] = (energy_pct >= 0.4 and health_pct >= 0.7)
         
         return {
             'dots': perceived_dots,

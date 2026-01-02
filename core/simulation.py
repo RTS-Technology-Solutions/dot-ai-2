@@ -34,6 +34,7 @@ class DotSimulation:
         self.generation = 1
         self.time_elapsed = 0.0
         self.paused = False
+        self.restarting = False  # Prevent recursive restarts
         
         # Counters
         self.next_dot_id = 0
@@ -45,6 +46,19 @@ class DotSimulation:
         self.total_food_consumed = 0
         self.total_births = 0
         self.total_attacks = 0
+        
+        # Metrics tracking
+        self.metrics_log = []  # List of generation summaries
+        self.current_gen_metrics = {
+            'births': 0,
+            'deaths': 0,
+            'sexual_births': 0,
+            'asexual_births': 0,
+            'combat_kills': 0,
+            'starvation_deaths': 0,
+            'peak_population': 0,
+            'avg_dna_snapshots': []
+        }
     
     def initialize(self):
         """
@@ -146,15 +160,83 @@ class DotSimulation:
                 # Clear target
                 attacker.attack_target = None
     
-    def dot_to_food(self, dot):
-        """Convert dead dot to food"""
-        # Food energy = remaining dot energy + half of health
-        food_energy = dot.resources.energy + (dot.resources.health * 0.5)
+    def handle_mating(self, mate_requests):
+        """
+        Handle sexual reproduction requests.
+        Returns list of offspring data for successful matings.
+        Safety: Limits processing to prevent infinite loops.
+        """
+        offspring = []
+        processed_pairs = set()  # Track which pairs have already mated
         
-        if food_energy > 0:
-            food = Food(self.next_food_id, dot.position, food_energy)
-            self.food.append(food)
-            self.next_food_id += 1
+        # Safety limit: process max 20 matings per frame to prevent hangs
+        MAX_MATINGS_PER_FRAME = 20
+        matings_processed = 0
+        
+        # Group requests by pairs (mutual consent required)
+        for request in mate_requests:
+            if matings_processed >= MAX_MATINGS_PER_FRAME:
+                break  # Safety limit reached
+            
+            requester_id = request['requester_id']
+            mate_id = request['mate_id']
+            
+            # Safety: prevent self-mating
+            if requester_id == mate_id:
+                continue
+            
+            # Create sorted pair ID (so A+B == B+A)
+            pair = tuple(sorted([requester_id, mate_id]))
+            
+            # Skip if this pair already processed
+            if pair in processed_pairs:
+                continue
+            
+            # Check if mate also wants to reproduce with requester (mutual consent)
+            mutual = False
+            for other_request in mate_requests:
+                if (other_request['requester_id'] == mate_id and 
+                    other_request['mate_id'] == requester_id):
+                    mutual = True
+                    break
+            
+            if mutual:
+                # Find both dot objects
+                dot_a = next((d for d in self.dots if d.id == requester_id), None)
+                dot_b = next((d for d in self.dots if d.id == mate_id), None)
+                
+                if dot_a and dot_b:
+                    # Check both can still reproduce (in case state changed)
+                    if (dot_a.action_manager.replicate.can_execute_sexual(dot_a) and
+                        dot_b.action_manager.replicate.can_execute_sexual(dot_b)):
+                        
+                        # Execute sexual reproduction
+                        world_state = self.get_world_state()
+                        result = dot_a.action_manager.replicate.execute_sexual(dot_a, dot_b, world_state)
+                        offspring.append(result)
+                        
+                        # Mark pair as processed
+                        processed_pairs.add(pair)
+                        matings_processed += 1
+        
+        return offspring
+    
+    def dot_to_food(self, dot):
+        """Convert dead dot to food based on its DNA investment"""
+        # Food energy based on DNA strength, not remaining resources
+        # More DNA points = better nutrition (risk/reward for evolution)
+        
+        base_nutrition = 30  # Minimum food value
+        dna_nutrition = dot.dna.get_total_points()  # Direct conversion: 1 DNA point = 1 food energy
+        
+        # Total food energy from corpse
+        food_energy = base_nutrition + dna_nutrition
+        
+        food = Food(self.next_food_id, dot.position, food_energy)
+        self.food.append(food)
+        self.next_food_id += 1
+        
+        print(f"  💀➡️🍎 Dot #{dot.id} ({dot.dna.get_total_points()} DNA pts) became {food_energy:.0f} energy food")
     
     def update(self, delta_time):
         """
@@ -174,22 +256,43 @@ class DotSimulation:
         # 1. Update all dots
         world_state = self.get_world_state()
         offspring_data = []
+        mate_requests = []  # Track mating requests
         
         for dot in self.dots:
             result = dot.update(delta_time, world_state)
-            # Collect offspring data
-            if result and result.get('result') == 'OFFSPRING':
+            # Collect offspring data (asexual reproduction)
+            if result and result.get('result') == 'OFFSPRING_ASEXUAL':
                 offspring_data.append(result)
+            # Collect mate requests (sexual reproduction)
+            elif result and result.get('result') == 'MATE_REQUEST':
+                mate_requests.append(result)
         
         # 2. Handle combat
         self.handle_combat()
         
-        # 3. Spawn offspring
+        # 3. Handle sexual reproduction (mate requests)
+        sexual_offspring = self.handle_mating(mate_requests)
+        offspring_data.extend(sexual_offspring)
+        
+        # 4. Spawn offspring (both sexual and asexual)
         for data in offspring_data:
             self.spawn_dot(data['child_pos'], data['child_dna'])
             self.total_births += 1
+            self.current_gen_metrics['births'] += 1
+            
+            # Track reproduction type
+            if data.get('result') == 'OFFSPRING_SEXUAL':
+                self.current_gen_metrics['sexual_births'] += 1
+                print(f"  💕 Dot #{data['parent_a_id']} + Dot #{data['parent_b_id']} → Offspring #{self.next_dot_id - 1} (sexual)")
+            elif data.get('result') == 'OFFSPRING_ASEXUAL':
+                self.current_gen_metrics['asexual_births'] += 1
+                print(f"  🧬 Dot #{data.get('parent_id', '?')} → Offspring #{self.next_dot_id - 1} (asexual)")
         
-        # 4. Check eating
+        # Update peak population
+        if len(self.dots) > self.current_gen_metrics['peak_population']:
+            self.current_gen_metrics['peak_population'] = len(self.dots)
+        
+        # 5. Check eating
         self.check_eating()
         
         # 5. Remove depleted food
@@ -211,11 +314,28 @@ class DotSimulation:
             self.total_dots_died += died
             print(f"💀 {died} dot(s) died (Bodies → Food)")
         
-        # 7. Respawn food if running low
-        if len(self.food) < 8:
+        # 7. Respawn food if critically low (reduced from 8 to 3)
+        # Force dots to compete for scarce resources
+        if len(self.food) < 3:
             self.spawn_food()
         
-        # 8. Update time
+        # 8. Check for extinction
+        if len(self.dots) == 0 and not self.restarting:
+            self.restarting = True
+            print("")
+            print("=" * 60)
+            print("💀 EXTINCTION - All dots have died!")
+            print(f"   Generation {self.generation} survived {self.time_elapsed:.1f} seconds")
+            print(f"   Stats: Created={self.total_dots_created}, Died={self.total_dots_died}")
+            print(f"   Births={self.total_births}, Attacks={self.total_attacks}")
+            print("")
+            print("🔄 Starting new generation...")
+            print("=" * 60)
+            print("")
+            self.restart_simulation()
+            self.restarting = False
+        
+        # 9. Update time
         self.time_elapsed += delta_time
     
     def check_eating(self):
@@ -291,6 +411,187 @@ class DotSimulation:
                 'height': self.height
             }
         }
+    
+    def restart_simulation(self):
+        """Restart simulation with new generation after extinction"""
+        # Log final generation metrics
+        self.current_gen_metrics['survival_time'] = self.time_elapsed
+        summary = {
+            'generation': self.generation,
+            **self.current_gen_metrics
+        }
+        self.metrics_log.append(summary)
+        
+        # Print generation summary
+        self.print_generation_summary(summary)
+        
+        # Increment generation
+        self.generation += 1
+        
+        # Reset stats (keep historical totals)
+        self.time_elapsed = 0.0
+        self.current_gen_metrics = {
+            'births': 0,
+            'deaths': 0,
+            'sexual_births': 0,
+            'asexual_births': 0,
+            'combat_kills': 0,
+            'starvation_deaths': 0,
+            'peak_population': 0,
+            'avg_dna_snapshots': []
+        }
+        
+        # Clear food
+        self.food = []
+        
+        # Respawn initial population with RANDOMIZED DNA
+        # Failed generation = try different strategies
+        num_dots = self.config.get('initial_dots', 5)
+        margin = 100
+        
+        print(f"🧬 Generation {self.generation}: Randomizing DNA strategies...")
+        
+        for i in range(num_dots):
+            x = random.randint(margin, self.width - margin)
+            y = random.randint(margin, self.height - margin)
+            pos = [x, y]
+            
+            # Create DNA with RANDOMIZED allocation
+            dna = self._create_randomized_dna()
+            
+            # Spawn dot
+            dot = Dot(self.next_dot_id, pos, dna)
+            self.dots.append(dot)
+            self.next_dot_id += 1
+            self.total_dots_created += 1
+        
+        # Respawn food
+        num_food = self.config.get('initial_food', 20)
+        for _ in range(num_food):
+            self.spawn_food()
+        
+        print(f"✅ Generation {self.generation}: Spawned {num_dots} dots with varied DNA and {num_food} food")
+    
+    def _create_randomized_dna(self):
+        """Create a DNA profile with randomized point allocation"""
+        dna = DNAProfile(total_points=100)
+        
+        # Start with baseline (all disabled except essentials)
+        for gene in dna.get_all_genes():
+            if gene.name not in ['eat']:  # Keep eat always enabled
+                gene.enabled = False
+                gene.points = 0
+        
+        # Budget to allocate - start with 100
+        budget = 100
+        allocated_genes = []
+        
+        # CRITICAL: Always enable core survival genes with safe allocation
+        # These are REQUIRED for dots to survive
+        essentials = [
+            ('brain_memory', 5, 12),
+            ('brain_sense_slots', 5, 12),
+            ('brain_action_slots', 5, 12),
+            ('vision_distance', 10, 20),
+            ('vision_fov', 10, 20),
+            ('food_detection', 8, 15),
+            ('movement_speed', 5, 12),
+            ('movement_max_energy', 5, 12),
+        ]
+        
+        for gene_name, min_pts, max_pts in essentials:
+            if hasattr(dna, gene_name):
+                gene = getattr(dna, gene_name)
+                gene.enabled = True
+                # Safe allocation - never exceed budget
+                safe_max = min(max_pts, budget - 1)  # Always keep 1 point reserve
+                if safe_max < min_pts:
+                    safe_max = min_pts
+                
+                points = random.randint(min_pts, safe_max)
+                gene.points = points
+                budget -= points
+                allocated_genes.append((gene_name, points))
+        
+        # CRITICAL: Always enable replicate gene (otherwise no reproduction = extinction!)
+        dna.replicate.enabled = True
+        replicate_pts = random.randint(1, min(5, max(1, budget // 4)))  # Small allocation
+        dna.replicate.points = replicate_pts
+        budget -= replicate_pts
+        allocated_genes.append(('replicate', replicate_pts))
+        
+        # Optional: Combat genes (50% chance)
+        if random.random() > 0.5 and budget >= 5:
+            dna.attack.enabled = True
+            attack_pts = random.randint(1, min(10, budget // 2))
+            dna.attack.points = attack_pts
+            budget -= attack_pts
+            allocated_genes.append(('attack', attack_pts))
+            
+            if budget >= 3:
+                dna.defend.enabled = True
+                defend_pts = random.randint(1, min(8, budget // 2))
+                dna.defend.points = defend_pts
+                budget -= defend_pts
+                allocated_genes.append(('defend', defend_pts))
+        
+        # Optional: Dot detection (70% chance)
+        if random.random() > 0.3 and budget >= 3:
+            dna.dot_detection.enabled = True
+            dot_detect_pts = random.randint(1, min(10, budget))
+            dna.dot_detection.points = dot_detect_pts
+            budget -= dot_detect_pts
+            allocated_genes.append(('dot_detection', dot_detect_pts))
+        
+        # Optional: DNA strength detection (20% chance)
+        if random.random() > 0.8 and budget >= 3:
+            dna.dna_strength_detection.enabled = True
+            dna_detect_pts = random.randint(1, min(8, budget))
+            dna.dna_strength_detection.points = dna_detect_pts
+            budget -= dna_detect_pts
+            allocated_genes.append(('dna_strength_detection', dna_detect_pts))
+        
+        # Sanity check: ensure budget is non-negative
+        if budget < 0:
+            print(f"⚠️  WARNING: DNA budget went negative ({budget})! This should not happen.")
+            print(f"   Allocated: {allocated_genes}")
+            # Emergency: disable optional genes to fix budget
+            if dna.dna_strength_detection.enabled:
+                budget += dna.dna_strength_detection.points
+                dna.dna_strength_detection.enabled = False
+                dna.dna_strength_detection.points = 0
+            if budget < 0 and dna.dot_detection.enabled:
+                budget += dna.dot_detection.points
+                dna.dot_detection.enabled = False
+                dna.dot_detection.points = 0
+        
+        return dna
+    
+    def print_generation_summary(self, summary):
+        """Print detailed generation summary"""
+        print("")
+        print("=" * 70)
+        print(f"📊 GENERATION {summary['generation']} SUMMARY")
+        print("=" * 70)
+        print(f"⏱️  Survival Time: {summary.get('survival_time', 0):.1f} seconds")
+        print(f"👥 Peak Population: {summary['peak_population']}")
+        print(f"")
+        print(f"REPRODUCTION:")
+        print(f"  Total Births: {summary['births']}")
+        print(f"    💕 Sexual: {summary['sexual_births']} ({summary['sexual_births']/max(1, summary['births'])*100:.0f}%)")
+        print(f"    🧬 Asexual: {summary['asexual_births']} ({summary['asexual_births']/max(1, summary['births'])*100:.0f}%)")
+        print(f"")
+        print(f"DEATHS:")
+        print(f"  Total Deaths: {summary['deaths']}")
+        print(f"    ⚔️  Combat: {summary['combat_kills']}")
+        print(f"    🍽️  Starvation: {summary['starvation_deaths']}")
+        print(f"")
+        if summary.get('avg_dna_snapshots'):
+            avg_dna_final = summary['avg_dna_snapshots'][-1][1] if summary['avg_dna_snapshots'] else 0
+            print(f"DNA EVOLUTION:")
+            print(f"  Final Avg DNA: {avg_dna_final:.1f} points")
+        print("=" * 70)
+        print("")
     
     def toggle_pause(self):
         """Toggle pause state"""

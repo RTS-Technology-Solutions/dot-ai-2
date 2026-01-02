@@ -137,6 +137,58 @@ class DNAProfile:
         """Create a deep copy of this DNA profile"""
         return DNAProfile.from_dict(self.serialize())
     
+    @staticmethod
+    def crossover(parent_a, parent_b):
+        """
+        Create offspring DNA by crossing over two parent DNA profiles
+        Uses averaging with random selection for enabled genes
+        """
+        import random
+        
+        # Create new DNA profile with average total points
+        avg_points = (parent_a.total_points + parent_b.total_points) // 2
+        child_dna = DNAProfile(total_points=avg_points)
+        
+        # Get all genes from both parents
+        parent_a_genes = {gene.name: gene for gene in parent_a.get_all_genes()}
+        parent_b_genes = {gene.name: gene for gene in parent_b.get_all_genes()}
+        
+        # Crossover each gene
+        for gene in child_dna.get_all_genes():
+            gene_name = gene.name
+            
+            # Skip eat gene (always enabled)
+            if gene_name == "eat":
+                gene.enabled = True
+                gene.points = 0
+                continue
+            
+            gene_a = parent_a_genes.get(gene_name)
+            gene_b = parent_b_genes.get(gene_name)
+            
+            if gene_a and gene_b:
+                # Enabled state: inherit from one parent (50/50)
+                gene.enabled = gene_a.enabled if random.random() < 0.5 else gene_b.enabled
+                
+                # Points: average with slight random variation
+                if gene.enabled:
+                    avg = (gene_a.points + gene_b.points) / 2.0
+                    variation = random.randint(-2, 2)  # Small variation
+                    gene.points = max(0, min(50, int(avg) + variation))
+                else:
+                    gene.points = 0
+        
+        # Ensure DNA is valid (doesn't exceed capacity)
+        allocated = child_dna.get_allocated_points()
+        if allocated > child_dna.total_points:
+            # Scale down all genes proportionally
+            scale_factor = child_dna.total_points / allocated
+            for gene in child_dna.get_all_genes():
+                if gene.enabled and gene.name != "eat":
+                    gene.points = int(gene.points * scale_factor)
+        
+        return child_dna
+    
     def __repr__(self):
         allocated = self.get_allocated_points()
         return f"DNAProfile({allocated}/{self.total_points} points, {sum(1 for g in self.get_all_genes() if g.enabled)} genes active)"
