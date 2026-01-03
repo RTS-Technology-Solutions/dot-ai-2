@@ -7,6 +7,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 import sys
+import json
 
 def compare_generations(log_dir, gen_list=None):
     """Compare specific generations or all generations"""
@@ -26,9 +27,42 @@ def compare_generations(log_dir, gen_list=None):
     try:
         lifetimes = pd.read_csv(log_path / "dot_lifetimes.csv")
         gen_summary = pd.read_csv(log_path / "generation_summary.csv")
+        
+        # Load colony metrics for incomplete generation reconstruction
+        with open(log_path / "colony_metrics.jsonl", 'r') as f:
+            colony_data = [json.loads(line) for line in f]
+        colony_df = pd.DataFrame(colony_data)
+        
     except FileNotFoundError as e:
         print(f"❌ Missing file: {e}")
         return
+    
+    # Detect and reconstruct incomplete generations
+    max_gen_in_summary = gen_summary['generation'].max()
+    max_gen_in_lifetimes = lifetimes['generation'].max()
+    max_gen_in_colony = colony_df['generation'].max()
+    
+    if max_gen_in_lifetimes > max_gen_in_summary or max_gen_in_colony > max_gen_in_summary:
+        incomplete_gen = max(max_gen_in_lifetimes, max_gen_in_colony)
+        print(f"⚠️  Detected incomplete Generation {incomplete_gen} - reconstructing from colony data...")
+        
+        # Reconstruct metrics
+        crash_gen_metrics = colony_df[colony_df['generation'] == incomplete_gen]
+        crash_gen_dots = lifetimes[lifetimes['generation'] == incomplete_gen]
+        
+        if len(crash_gen_metrics) > 0:
+            crash_summary = {
+                'generation': incomplete_gen,
+                'survival_time': crash_gen_metrics['simulation_time'].max(),
+                'total_births': crash_gen_metrics['total_births'].max() if 'total_births' in crash_gen_metrics.columns else len(crash_gen_dots),
+                'sexual_births': crash_gen_metrics['gen_sexual_births'].max() if 'gen_sexual_births' in crash_gen_metrics.columns else 0,
+                'asexual_births': crash_gen_metrics['gen_asexual_births'].max() if 'gen_asexual_births' in crash_gen_metrics.columns else 0,
+                'combat_kills': (crash_gen_dots['death_cause'] == 'combat').sum(),
+                'starvation_deaths': (crash_gen_dots['death_cause'] == 'starvation').sum(),
+                'peak_population': crash_gen_metrics['population'].max()
+            }
+            gen_summary = pd.concat([gen_summary, pd.DataFrame([crash_summary])], ignore_index=True)
+            print(f"✅ Reconstructed Generation {incomplete_gen}\n")
     
     # Determine which generations to compare
     if gen_list is None:

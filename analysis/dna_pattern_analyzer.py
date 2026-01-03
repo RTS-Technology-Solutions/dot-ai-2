@@ -29,21 +29,22 @@ def analyze_dna_patterns(log_dir):
     # Load data
     try:
         lifetimes = pd.read_csv(log_path / "dot_lifetimes.csv")
-        births = pd.read_csv(log_path / "dot_births.csv")
     except FileNotFoundError as e:
         print(f"❌ Missing required file: {e}")
         return
     
-    # Merge lifetime stats with birth DNA data
-    dot_data = pd.merge(births, lifetimes, on='dot_id', how='inner', suffixes=('_birth', '_death'))
+    # Use lifetimes data directly (contains DNA info)
+    dot_data = lifetimes.copy()
     
-    print(f"📊 Dataset: {len(dot_data)} dots with complete birth+death data")
+    print(f"📊 Dataset: {len(dot_data)} dots with complete lifetime data")
     
     # ===== IDENTIFY CHAMPIONS =====
     # Champions = top 10% by fitness score
+    # Use total_reward if available, otherwise default to 0
+    dot_data['reward'] = 0  # Default value since we don't have reward data in lifetimes
     dot_data['fitness'] = (dot_data['lifetime'] * 
                           (1 + dot_data['offspring_count']) * 
-                          (1 + dot_data.get('reward', 0) / 100))
+                          (1 + dot_data['reward'] / 100))
     
     fitness_threshold = dot_data['fitness'].quantile(0.90)
     champions = dot_data[dot_data['fitness'] >= fitness_threshold]
@@ -161,7 +162,7 @@ def analyze_dna_patterns(log_dir):
     # ===== TOP PERFORMERS =====
     print(f"\n🏆 TOP 10 CHAMPIONS:")
     top_champions = champions.nlargest(10, 'fitness')[
-        ['dot_id', 'generation_death', 'lifetime', 'total_dna_points', 'offspring_count', 'fitness', 'death_cause']
+        ['dot_id', 'generation', 'lifetime', 'total_dna_points', 'offspring_count', 'fitness', 'death_cause']
     ]
     print(top_champions.to_string(index=False))
     
