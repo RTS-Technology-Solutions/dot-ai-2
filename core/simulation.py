@@ -152,7 +152,7 @@ class DotSimulation:
         # Individual dots learn within a generation, this learns across ALL generations
         self.champion_archive = []  # Hall of fame - top 10 DNA configs ever
         self.generation_champions = []  # Best performers from each generation
-        self.current_gen_dots_tracker = []  # Track all dots for end-of-gen analysis
+        self.current_gen_dots_tracker = {}  # Track all dots for end-of-gen analysis (dict keyed by dot_id)
         self.max_archive_size = 10  # Keep top 10 champions in hall of fame
         
         # Per-generation metrics (reset each generation)
@@ -192,12 +192,12 @@ class DotSimulation:
             self.dots.append(dot)
             
             # Track for end-of-generation analysis
-            self.current_gen_dots_tracker.append({
+            self.current_gen_dots_tracker[self.next_dot_id] = {
                 'dot_id': self.next_dot_id,
                 'birth_time': self.time_elapsed,
-                'birth_dna': dna.serialize(),
+                'birth_dna': dna,  # Store actual DNA object, not serialized
                 'dot_ref': dot
-            })
+            }
             
             self.next_dot_id += 1
             self.total_dots_created += 1
@@ -256,12 +256,12 @@ class DotSimulation:
         self.dots.append(dot)
         
         # Track for end-of-generation analysis
-        self.current_gen_dots_tracker.append({
+        self.current_gen_dots_tracker[self.next_dot_id] = {
             'dot_id': self.next_dot_id,
             'birth_time': self.time_elapsed,
-            'birth_dna': dna_profile.serialize(),
+            'birth_dna': dna_profile,  # Store actual DNA object, not serialized
             'dot_ref': dot
-        })
+        }
         
         self.next_dot_id += 1
         self.total_dots_created += 1
@@ -843,11 +843,15 @@ class DotSimulation:
         # Create a copy of the base DNA
         new_dna = DNAProfile(total_points=base_dna.get_total_points())
         
+        # Build lookup of base genes by name
+        base_genes = {gene.name: gene for gene in base_dna.get_all_genes()}
+        
         # Copy gene settings
         for gene in new_dna.get_all_genes():
-            base_gene = getattr(base_dna, gene.name)
-            gene.enabled = base_gene.enabled
-            gene.points = base_gene.points
+            if gene.name in base_genes:
+                base_gene = base_genes[gene.name]
+                gene.enabled = base_gene.enabled
+                gene.points = base_gene.points
         
         # Mutate: randomly adjust 1-3 genes
         num_mutations = random.randint(1, 3)
