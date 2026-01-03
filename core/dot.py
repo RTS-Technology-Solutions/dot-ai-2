@@ -38,6 +38,9 @@ class Dot:
         self.attack_target = None
         self.mate_target = None  # ID of dot being sought for mating
         
+        # Evolutionary tracking
+        self.offspring_count = 0  # Track reproductive success
+        
         # Visual debugging
         self.vision_debug_circles = []
     
@@ -543,7 +546,8 @@ class Dot:
             'vision_debug': self.vision_debug_circles,
             'resources': self.resources.serialize(),
             'age': self.brain.age,  # Age in seconds
-            'brain': self.brain.serialize()
+            'brain': self.brain.serialize(),
+            'offspring_count': self.offspring_count  # Evolutionary success
         }
     
     def serialize(self) -> Dict[str, Any]:

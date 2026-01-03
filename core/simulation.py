@@ -661,6 +661,9 @@ class DotSimulation:
     
     def restart_simulation(self):
         """Restart simulation with new generation after extinction"""
+        # Select champions from the generation that just died
+        self.select_generation_champions()
+        
         # Log final generation metrics
         self.current_gen_metrics['survival_time'] = self.time_elapsed
         summary = {
@@ -692,23 +695,26 @@ class DotSimulation:
             'avg_dna_snapshots': []
         }
         
+        # Clear dot tracker for new generation
+        self.current_gen_dots_tracker = {}
+        
         # Clear food
         self.food = []
         
         # Respawn initial population with RANDOMIZED DNA
-        # Failed generation = try different strategies
+        # Create new generation using evolved DNA strategies
         num_dots = self.config.get('initial_dots', 5)
         margin = 100
         
-        print(f"🧬 Generation {self.generation}: Randomizing DNA strategies...")
+        print(f"🧬 Generation {self.generation}: Creating evolved DNA strategies...")
         
         for i in range(num_dots):
             x = random.randint(margin, self.width - margin)
             y = random.randint(margin, self.height - margin)
             pos = [x, y]
             
-            # Create DNA with RANDOMIZED allocation
-            dna = self._create_randomized_dna()
+            # Create DNA using evolutionary memory (60% champion, 30% weighted, 10% random)
+            dna = self._create_evolved_dna()
             
             # Spawn dot
             dot = Dot(self.next_dot_id, pos, dna)
@@ -732,7 +738,195 @@ class DotSimulation:
         for _ in range(num_food):
             self.spawn_food()
         
-        print(f"✅ Generation {self.generation}: Spawned {num_dots} dots with varied DNA and {num_food} food")
+        print(f"✅ Generation {self.generation}: Spawned {num_dots} dots with evolved DNA and {num_food} food")
+    
+    def select_generation_champions(self):
+        """
+        Select the top 3 performers from the generation that just ended.
+        Fitness = lifetime × (1 + offspring) × (1 + reward/100)
+        """
+        if not self.current_gen_dots_tracker:
+            print("📊 No dots tracked - skipping champion selection")
+            return
+        
+        # Calculate fitness for all tracked dots
+        candidates = []
+        for dot_id, tracker in self.current_gen_dots_tracker.items():
+            # Skip dots still alive (shouldn't happen in restart, but be safe)
+            if 'lifetime' not in tracker:
+                continue
+            
+            lifetime = tracker.get('lifetime', 0)
+            offspring = tracker.get('offspring_count', 0)
+            reward = tracker.get('total_reward', 0)
+            
+            # Fitness formula: lifetime × (1 + offspring) × (1 + reward/100)
+            fitness = lifetime * (1 + offspring) * (1 + reward / 100.0)
+            
+            candidates.append({
+                'dot_id': dot_id,
+                'fitness': fitness,
+                'lifetime': lifetime,
+                'offspring': offspring,
+                'reward': reward,
+                'dna': tracker['birth_dna']  # DNA they were born with
+            })
+        
+        # Sort by fitness descending
+        candidates.sort(key=lambda x: x['fitness'], reverse=True)
+        
+        # Select top 3 as generation champions
+        champions = candidates[:3]
+        
+        if champions:
+            print(f"\n🏆 Generation {self.generation} Champions:")
+            for i, champ in enumerate(champions, 1):
+                print(f"  {i}. Dot #{champ['dot_id']}: Fitness={champ['fitness']:.1f} "
+                      f"(lifetime={champ['lifetime']:.1f}s, offspring={champ['offspring']}, "
+                      f"reward={champ['reward']:.1f})")
+            
+            # Store champions for this generation
+            self.generation_champions.append({
+                'generation': self.generation,
+                'champions': champions
+            })
+            
+            # Update hall of fame (all-time best)
+            self.update_hall_of_fame(champions)
+    
+    def update_hall_of_fame(self, new_champions):
+        """
+        Update the all-time hall of fame with new champions.
+        Maintains top 10 performers across all generations.
+        """
+        # Add new champions to archive with generation tag
+        for champ in new_champions:
+            champ['generation'] = self.generation  # Tag with current generation
+            self.champion_archive.append(champ)
+        
+        # Sort by fitness and keep top 10
+        self.champion_archive.sort(key=lambda x: x['fitness'], reverse=True)
+        self.champion_archive = self.champion_archive[:self.max_archive_size]
+        
+        if len(self.champion_archive) > 0:
+            print(f"\n🎖️  Hall of Fame (Top {len(self.champion_archive)}):")
+            for i, champ in enumerate(self.champion_archive[:3], 1):  # Show top 3
+                print(f"  {i}. Gen {champ.get('generation', '?')}: Fitness={champ['fitness']:.1f}")
+    
+    def _create_evolved_dna(self):
+        """
+        Create DNA using evolutionary memory.
+        60% - Clone a champion and mutate
+        30% - Create weighted random based on successful patterns
+        10% - Pure random exploration
+        """
+        roll = random.random()
+        
+        if roll < 0.6 and self.champion_archive:
+            # 60%: Clone a champion with mutations
+            champion = random.choice(self.champion_archive)
+            return self._mutate_dna(champion['dna'])
+        
+        elif roll < 0.9 and self.champion_archive:
+            # 30%: Weighted random based on champion patterns
+            return self._create_weighted_random_dna()
+        
+        else:
+            # 10%: Pure random exploration
+            return self._create_randomized_dna()
+    
+    def _mutate_dna(self, base_dna):
+        """
+        Create a mutated copy of champion DNA.
+        Small random changes to point allocations.
+        """
+        # Create a copy of the base DNA
+        new_dna = DNAProfile(total_points=base_dna.get_total_points())
+        
+        # Copy gene settings
+        for gene in new_dna.get_all_genes():
+            base_gene = getattr(base_dna, gene.name)
+            gene.enabled = base_gene.enabled
+            gene.points = base_gene.points
+        
+        # Mutate: randomly adjust 1-3 genes
+        num_mutations = random.randint(1, 3)
+        all_genes = new_dna.get_all_genes()
+        
+        for _ in range(num_mutations):
+            gene = random.choice(all_genes)
+            
+            if random.random() < 0.5:
+                # Increase points (small amount)
+                increase = random.randint(1, 5)
+                gene.points = min(gene.points + increase, 20)  # Cap at 20
+                gene.enabled = True
+            else:
+                # Decrease points
+                decrease = random.randint(1, 5)
+                gene.points = max(gene.points - decrease, 0)
+                if gene.points == 0 and gene.name != 'eat':
+                    gene.enabled = False
+        
+        return new_dna
+    
+    def _create_weighted_random_dna(self):
+        """
+        Create DNA biased toward successful patterns from champions.
+        Analyzes champion gene usage and creates similar but randomized DNA.
+        """
+        if not self.champion_archive:
+            return self._create_randomized_dna()
+        
+        # Analyze champion gene patterns
+        gene_usage = {}
+        for champ in self.champion_archive[:5]:  # Use top 5 champions
+            dna = champ['dna']
+            for gene in dna.get_all_genes():
+                if gene.name not in gene_usage:
+                    gene_usage[gene.name] = {'enabled_count': 0, 'avg_points': 0, 'samples': 0}
+                
+                if gene.enabled:
+                    gene_usage[gene.name]['enabled_count'] += 1
+                    gene_usage[gene.name]['avg_points'] += gene.points
+                    gene_usage[gene.name]['samples'] += 1
+        
+        # Calculate averages
+        for gene_name, stats in gene_usage.items():
+            if stats['samples'] > 0:
+                stats['avg_points'] = stats['avg_points'] / stats['samples']
+                stats['enable_probability'] = stats['enabled_count'] / len(self.champion_archive[:5])
+        
+        # Create new DNA based on patterns
+        new_dna = DNAProfile(total_points=100)
+        budget = 100
+        
+        # Disable all genes first
+        for gene in new_dna.get_all_genes():
+            gene.enabled = False
+            gene.points = 0
+        
+        # Always enable eat
+        new_dna.eat.enabled = True
+        
+        # Enable genes based on champion patterns
+        for gene in new_dna.get_all_genes():
+            if gene.name == 'eat':
+                continue
+            
+            stats = gene_usage.get(gene.name, {})
+            enable_prob = stats.get('enable_probability', 0.1)
+            
+            if random.random() < enable_prob and budget >= 2:
+                gene.enabled = True
+                # Use avg from champions as baseline, with some randomness
+                avg_pts = stats.get('avg_points', 5)
+                variation = random.randint(-3, 3)
+                points = max(1, min(int(avg_pts + variation), budget))
+                gene.points = points
+                budget -= points
+        
+        return new_dna
     
     def _create_randomized_dna(self):
         """Create a DNA profile with randomized point allocation"""
