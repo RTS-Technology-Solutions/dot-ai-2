@@ -147,6 +147,14 @@ class DotSimulation:
         # Collect data for analysis and research
         self.metrics_log = []  # History of all generation summaries
         
+        # ===== EVOLUTIONARY MEMORY SYSTEM (Phase 4 - Meta-Learning) =====
+        # This is the "model brain" - it learns what works across generations
+        # Individual dots learn within a generation, this learns across ALL generations
+        self.champion_archive = []  # Hall of fame - top 10 DNA configs ever
+        self.generation_champions = []  # Best performers from each generation
+        self.current_gen_dots_tracker = []  # Track all dots for end-of-gen analysis
+        self.max_archive_size = 10  # Keep top 10 champions in hall of fame
+        
         # Per-generation metrics (reset each generation)
         self.current_gen_metrics = {
             'births': 0,               # Total offspring born
@@ -180,7 +188,17 @@ class DotSimulation:
             
             # Spawn dot
             dot = Dot(self.next_dot_id, pos, dna)
+            dot.offspring_count = 0  # Track reproduction success
             self.dots.append(dot)
+            
+            # Track for end-of-generation analysis
+            self.current_gen_dots_tracker.append({
+                'dot_id': self.next_dot_id,
+                'birth_time': self.time_elapsed,
+                'birth_dna': dna.serialize(),
+                'dot_ref': dot
+            })
+            
             self.next_dot_id += 1
             self.total_dots_created += 1
         
@@ -232,9 +250,19 @@ class DotSimulation:
         return food
     
     def spawn_dot(self, position, dna_profile):
-        """Spawn a new dot"""
+        """Spawn a new dot (during reproduction)"""
         dot = Dot(self.next_dot_id, position, dna_profile)
+        dot.offspring_count = 0  # Track reproduction success
         self.dots.append(dot)
+        
+        # Track for end-of-generation analysis
+        self.current_gen_dots_tracker.append({
+            'dot_id': self.next_dot_id,
+            'birth_time': self.time_elapsed,
+            'birth_dna': dna_profile.serialize(),
+            'dot_ref': dot
+        })
+        
         self.next_dot_id += 1
         self.total_dots_created += 1
         return dot
@@ -411,7 +439,7 @@ class DotSimulation:
             if data.get('result') == 'OFFSPRING_SEXUAL':
                 self.current_gen_metrics['sexual_births'] += 1
                 
-                # Phase 4: Reward both parents for successful reproduction
+                # Track offspring count for both parents
                 parent1_id = data.get('parent_a_id')
                 parent2_id = data.get('parent_b_id')
                 
@@ -419,6 +447,7 @@ class DotSimulation:
                 parent2 = next((d for d in self.dots if d.id == parent2_id), None)
                 
                 if parent1:
+                    parent1.offspring_count += 1
                     parent1.brain.add_reward('seek_mate', 2.0)  # Good reward for sexual reproduction
                     parent1.brain.add_memory('reproduce_sexual', {
                         'partner_id': parent2_id,
@@ -426,6 +455,7 @@ class DotSimulation:
                     }, 2.0)
                 
                 if parent2:
+                    parent2.offspring_count += 1
                     parent2.brain.add_reward('seek_mate', 2.0)
                     parent2.brain.add_memory('reproduce_sexual', {
                         'partner_id': parent1_id,
@@ -447,6 +477,7 @@ class DotSimulation:
                 # Phase 4: Reward parent for asexual reproduction (smaller than sexual)
                 parent = next((d for d in self.dots if d.id == parent_id), None)
                 if parent:
+                    parent.offspring_count += 1
                     parent.brain.add_reward('replicate', 1.5)  # Less than sexual
                     parent.brain.add_memory('reproduce_asexual', {
                         'child_id': new_dot.id
@@ -502,6 +533,15 @@ class DotSimulation:
                 self.current_gen_metrics['starvation_deaths'] += 1
             else:
                 self.current_gen_metrics['combat_kills'] += 1
+            
+            # Track dot stats at death for champion selection
+            if dot.id in self.current_gen_dots_tracker:
+                tracker = self.current_gen_dots_tracker[dot.id]
+                tracker['death_time'] = self.time_elapsed
+                tracker['lifetime'] = self.time_elapsed - tracker['birth_time']
+                tracker['final_dna'] = dot.dna.get_total_points()
+                tracker['total_reward'] = dot.brain.total_reward
+                tracker['offspring_count'] = dot.offspring_count
             
             # Log death
             if self.logger:
