@@ -1,14 +1,18 @@
 """
-Resource System - Energy, Health, and Hunger Management
-Handles resource tracking, depletion, and regeneration
+Resource management is separated from Dot because the cascading eat() logic
+(energy → health → DNA) is its own non-trivial subsystem. Isolating it means
+the cascade rules can change without touching the agent loop, and the resource
+system can be tested against known inputs without needing a full Dot instance.
 """
 
 class Resources:
     """
-    Manages a dot's vital resources
-    - Energy: Primary fuel for actions
-    - Health: Life force, death at 0
-    - Hunger: Derived from energy ratio
+    Owns energy, health, and derived hunger for one dot.
+
+    The cascade priority (energy fills first, then health, then DNA) mirrors
+    a biological hierarchy: immediate survival takes precedence over recovery,
+    which takes precedence over genetic long-term investment. That ordering is
+    enforced here so the Dot doesn’t need to implement it.
     """
     
     def __init__(self, dna_profile):
@@ -27,9 +31,9 @@ class Resources:
     
     def calculate_max_energy(self):
         """
-        Calculate maximum energy from DNA
-        Base: 100
-        DNA Bonus: movement_max_energy gene_points * 5
+        Tank capacity grows with the movement_max_energy gene because a dot
+        that invests in sustained activity needs a larger fuel reserve to
+        operate without constant refueling interrupting other behaviors.
         """
         base = 100
         if self.dna.movement_max_energy.enabled:
@@ -39,24 +43,29 @@ class Resources:
     
     def update_hunger(self):
         """
-        Recalculate hunger based on energy ratio
-        Hunger = 1 - (current_energy / max_energy)
+        Derives hunger from the current energy ratio.
+
+        Not stored independently — recalculated after every change so hunger
+        can never drift out of sync with the energy value it reflects.
         """
         self.hunger = 1.0 - (self.energy / self.max_energy)
     
     def deplete_energy(self, amount):
         """
-        Remove energy (movement, actions, idle)
-        Energy cannot go below 0
+        Reduces energy and refreshes hunger.
+
+        Floor at 0 prevents underflow errors from compounding depletion calls.
         """
         self.energy = max(0.0, self.energy - amount)
         self.update_hunger()
     
     def add_energy(self, amount):
         """
-        Add energy (from eating)
-        Energy cannot exceed max
-        Returns: Amount of overflow (for DNA conversion)
+        Fills energy up to max and returns the overflow.
+
+        Overflow is what the caller (eat()) routes onward to health and then
+        DNA — this method is responsible only for the energy portion of the
+        cascade.
         """
         old_energy = self.energy
         self.energy = min(self.max_energy, self.energy + amount)
@@ -68,16 +77,17 @@ class Resources:
     
     def deplete_health(self, amount):
         """
-        Damage health (from starvation, attacks)
-        Health cannot go below 0
+        Reduces health. Floor at 0 ensures a dot dies cleanly
+        rather than accumulating negative health over multiple hits.
         """
         self.health = max(0.0, self.health - amount)
     
     def add_health(self, amount):
         """
-        Heal health (from energy overflow)
-        Health cannot exceed max
-        Returns: Amount of overflow (for DNA conversion)
+        Increases health up to max and returns overflow.
+
+        Overflow continues up the cascade to DNA growth, so a fully-healed
+        dot converts excess food into improved offspring potential.
         """
         old_health = self.health
         self.health = min(self.max_health, self.health + amount)
@@ -88,16 +98,13 @@ class Resources:
     
     def eat(self, food_energy: float, brain):
         """
-        Consume food with cascading priority system:
-        1. Fill energy first
-        2. Overflow goes to health
-        3. When both full, overflow converts to DNA points (10% conversion rate)
-        
-        Args:
-            food_energy: Energy value from food
-            brain: Brain reference for DNA growth
-        
-        Returns: Dict with energy_gained, health_gained, dna_gained
+        Routes food energy through the priority cascade.
+
+        Energy fills first — immediate fuel matters more than recovery. Health
+        fills second — survival outlasts the current meal. Only a dot with both
+        full converts surplus to DNA, signaling genuine thriving rather than
+        narrow survival. The 10% conversion rate is intentionally conservative
+        so DNA growth requires sustained performance, not a single lucky meal.
         """
         result = {'energy_gained': 0, 'health_gained': 0, 'dna_gained': 0}
         
@@ -120,31 +127,31 @@ class Resources:
         return result
     
     def is_alive(self):
-        """Check if dot is alive (health > 0)"""
+        """False when health reaches 0 — the only death condition after starvation depletes health."""
         return self.health > 0
     
     def is_starving(self):
-        """Check if in starvation state (energy = 0 but health > 0)"""
+        """True when energy is gone but the dot hasn’t died yet — triggers starvation damage in the update loop."""
         return self.energy <= 0 and self.health > 0
     
     def is_satiated(self):
-        """Check if energy is maxed out (for DNA point gain)"""
+        """True when energy is at max — this is the threshold at which food overflow starts refilling health."""
         return self.energy >= self.max_energy
     
     def is_healthy(self):
-        """Check if health is maxed out (for ability unlocking)"""
+        """True when health is at max — threshold at which food overflow converts to DNA growth."""
         return self.health >= self.max_health
     
     def get_energy_ratio(self):
-        """Get energy as ratio 0-1"""
+        """Energy as a 0–1 fraction for hunger calculation and renderer display."""
         return self.energy / self.max_energy if self.max_energy > 0 else 0
     
     def get_health_ratio(self):
-        """Get health as ratio 0-1"""
+        """Health as a 0–1 fraction for renderer display and utility calculations."""
         return self.health / self.max_health if self.max_health > 0 else 0
     
     def serialize(self):
-        """Export resource state"""
+        """Snapshot for the renderer and logger — returns plain values, no object references."""
         return {
             'energy': self.energy,
             'max_energy': self.max_energy,

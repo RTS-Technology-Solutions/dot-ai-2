@@ -125,6 +125,8 @@ from datetime import datetime
 from core.simulation import DotSimulation
 from core.metrics_logger import MetricsLogger
 from renderers.pygame_renderer import PygameRenderer
+from configs import set_config, get_config
+from configs.profiles import PROFILES
 
 
 def main():
@@ -147,13 +149,17 @@ def main():
     print("")
     
     # ===== CONFIGURATION =====
-    # Tune these parameters to change the experiment!
+    # Change the profile name here to switch experiment presets.
+    # Available profiles: "default", "high_aggression", "rapid_evolution"
+    # Add your own presets in configs/profiles.py!
+    set_config(PROFILES["default"])
+
+    # All world/behavior parameters now live in the active config.
+    # Width/height are still needed by the renderer, so read them here.
+    world_cfg = get_config().world
     config = {
-        'width': 3200,           # World width (pixels) - Wider for ultra-wide monitors
-        'height': 1200,          # World height (pixels) - Scaled for Phase 4
-        'initial_dots': 10,      # Starting population - DOUBLED for Phase 4
-        'initial_food': 40,      # Starting food count - DOUBLED for Phase 4
-        # Note: More config options in DotSimulation class!
+        'width': world_cfg.width,
+        'height': world_cfg.height,
     }
     
     # Initialize metrics logger

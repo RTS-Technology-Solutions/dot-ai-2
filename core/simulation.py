@@ -1,52 +1,9 @@
 """
-=====================================================================
-SIMULATION ENGINE - THE WORLD WHERE DOTS EVOLVE 🌍
-=====================================================================
-
-This is the "game engine" - the core logic that runs the entire
-ecosystem simulation. Think of it as the "laws of physics" for
-the dot world!
-
-WHAT THIS FILE DOES:
-- Creates and manages all dots (living agents)
-- Spawns and tracks food resources
-- Runs the update loop (like a game engine's tick())
-- Handles reproduction (sexual & asexual)
-- Manages combat and death
-- Triggers generational evolution
-- Tracks metrics for analysis
-
-KEY CONCEPTS:
-
-1. ENTITY MANAGEMENT:
-   - Dots: Living agents with DNA, energy, health
-   - Food: Resource items that dots consume for energy
-
-2. THE UPDATE LOOP (60 times per second):
-   - Dots perceive their environment (vision)
-   - Dots decide what to do (utility-based AI)
-   - Dots execute actions (move, eat, attack, reproduce)
-   - Energy drains, health changes
-   - Dead dots removed, food spawned
-
-3. NATURAL SELECTION:
-   - Dots with good DNA survive longer
-   - Survivors reproduce and pass on genes
-   - Weak strategies die out quickly
-   - Strong strategies spread through population
-
-4. GENERATIONAL EVOLUTION:
-   - If ALL dots die → Generation failed
-   - Simulation restarts with RANDOMIZED DNA
-   - Each restart tries different genetic strategies
-   - Over many generations, optimal builds emerge
-
-REAL-WORLD PARALLEL:
-This is like running Earth's evolution on fast-forward! We create
-the environment and rules, then let natural selection discover
-what works. We don't TELL dots how to behave - they figure it out
-through millions of tiny survival decisions over many generations.
-=====================================================================
+The simulation is defined separately from the renderer and the Dot class so that
+the evolution loop can run headless (logging runs, tests) without any graphics
+dependency. The simulation owns world state and enforces physical rules; dots own
+their own decisions. Neither module imports the other — dots know nothing about
+the simulation and the simulation calls update() on each dot and reads back the result.
 """
 
 import random
@@ -55,61 +12,30 @@ from .dot import Dot
 from .food import Food
 from .dna import DNAProfile
 from .metrics_logger import MetricsLogger
+from configs import get_config
 
 
 class DotSimulation:
     """
-    =====================================================================
-    SIMULATION ENGINE: The Living World
-    =====================================================================
-    
-    This class is the "universe" where dots live, compete, and evolve.
-    It manages:
-    - Time (delta time updates)
-    - Space (world bounds, positions)
-    - Life (dots, food, births, deaths)
-    - Evolution (generations, DNA inheritance)
-    
-    THE SIMULATION LOOP:
-    1. update() called 60 times/second
-    2. Each dot perceives → decides → acts
-    3. Resources consumed, energy drained
-    4. Reproduction happens (if conditions met)
-    5. Deaths processed
-    6. Metrics tracked
-    7. Repeat!
-    
-    GENERATIONAL CYCLE:
-    Gen 1: Random DNA → Some dots die, some survive → Survivors reproduce
-    Gen 2: Inherited DNA → Better strategies emerge → Weak strategies removed
-    Gen N: Optimal DNA discovered → Dominant strategy stabilizes
-    
-    EXTINCTION & RESTART:
-    If all dots die:
-    - Current generation deemed "failed"
-    - Print generation summary (survival time, deaths, etc.)
-    - Randomize DNA and spawn new generation
-    - Evolution tries again with different strategies!
-    
-    This teaches: THERE IS NO SINGLE "CORRECT" DNA PROFILE!
-    Success depends on environment, competition, and randomness.
-    =====================================================================
+    The world engine: owns all entities, enforces physics, and drives evolution.
+
+    Kept as a single class because the update loop requires shared mutable state
+    (entity lists, time, generation counters) that would be awkward to split.
+    The key design choice is that this class does not decide agent behavior —
+    it calls update() on each dot and acts on the returned result. This keeps
+    agents testable in isolation since their logic never reaches into the simulation.
+
+    Generation restarts live here rather than in main.py because the reset logic
+    (population wipe, DNA randomization, metric flush) is tightly coupled to the
+    entity list and generation counter. Exposing those internals to the caller
+    would create hidden state dependencies.
     """
     
     def __init__(self, config, logger=None):
         """
-        Initialize the simulation world
-        
-        CONFIG DICTIONARY contains all tunable parameters:
-        - width, height: World dimensions (pixels)
-        - initial_dots: Starting population
-        - initial_food: Starting food count
-        - food_spawn_rate: Food per second
-        - max_food: Food capacity limit
-        
         Args:
-            config: Configuration dictionary
-            logger: MetricsLogger instance (optional, for data collection)
+            config: Configuration dict providing world dimensions and initial counts.
+            logger: Optional MetricsLogger — pass None for headless runs.
         """
         self.config = config
         self.logger = logger
@@ -169,13 +95,14 @@ class DotSimulation:
     
     def initialize(self):
         """
-        Set up initial simulation state
-        - Spawn initial dot(s)
-        - Spawn initial food
+        Populate the world for the first generation or a post-extinction restart.
+
+        Called at startup and again whenever the entire population is wiped out,
+        because the same seeding logic applies in both cases.
         """
         # Spawn initial population of dots
-        num_dots = self.config.get('initial_dots', 3)
-        margin = 100
+        num_dots = get_config().world.initial_dots
+        margin = get_config().world.dot_spawn_margin
         
         for i in range(num_dots):
             # Random position with margin
@@ -208,17 +135,23 @@ class DotSimulation:
         print(f"   Resources: {self.dots[0].resources}")
         
         # Spawn initial food scattered around
-        num_food = self.config.get('initial_food', 10)
+        num_food = get_config().world.initial_food
         for _ in range(num_food):
             self.spawn_food()
         
         print(f"✅ Spawned {num_food} food items")
     
     def spawn_food(self, position=None):
-        """Spawn a single food item"""
+        """
+        Create one food item and add it to the world.
+
+        Avoids spawning near the world center so food is distributed across the
+        map rather than clustering at the point where dots first appear.
+        """
         if position is None:
             # Random position with margin, avoid center where dot spawns
-            margin = 50
+            _wcfg = get_config().world
+            margin = _wcfg.food_spawn_margin
             center_x, center_y = self.width / 2, self.height / 2
             
             # Try to spawn away from center
@@ -232,8 +165,8 @@ class DotSimulation:
                 dy = y - center_y
                 distance = (dx*dx + dy*dy) ** 0.5
                 
-                # Accept if far enough from center (> 100 pixels)
-                if distance > 100:
+                # Accept if far enough from center
+                if distance > _wcfg.food_center_avoid_radius:
                     position = [x, y]
                     break
             else:
@@ -241,7 +174,8 @@ class DotSimulation:
                 position = [x, y]
         
         # Random energy value
-        energy = random.randint(50, 150)
+        _wcfg = get_config().world
+        energy = random.randint(_wcfg.food_energy_min, _wcfg.food_energy_max)
         
         food = Food(self.next_food_id, position, energy)
         self.food.append(food)
@@ -250,7 +184,7 @@ class DotSimulation:
         return food
     
     def spawn_dot(self, position, dna_profile):
-        """Spawn a new dot (during reproduction)"""
+        """Create one offspring dot and register it in the entity list and generation tracker."""
         dot = Dot(self.next_dot_id, position, dna_profile)
         dot.offspring_count = 0  # Track reproduction success
         self.dots.append(dot)
@@ -268,7 +202,14 @@ class DotSimulation:
         return dot
     
     def handle_combat(self):
-        """Handle all combat interactions"""
+        """
+        Resolve all pending attack actions for this tick.
+
+        Processed after all dots have run update() so target positions are final
+        before damage is applied. Doing this in the simulation rather than inside
+        each dot prevents a dot from attacking a target that may have already
+        moved or died in the same tick.
+        """
         for attacker in self.dots:
             if attacker.current_action == "attack" and attacker.attack_target is not None:
                 # Find actual target dot object
@@ -315,9 +256,14 @@ class DotSimulation:
     
     def handle_mating(self, mate_requests):
         """
-        Handle sexual reproduction requests.
-        Returns list of offspring data for successful matings.
-        Safety: Limits processing to prevent infinite loops.
+        Pair mutual mate requests and execute crossover for consenting pairs.
+
+        Mutual consent is required (both dots must have elected seek_mate and pointed
+        at each other) to ensure sexual reproduction involves genuine convergence of
+        strategies rather than a dot being an involuntary DNA donor.
+
+        The per-frame limit prevents a large mating frenzy from stalling the main loop.
+        Returns offspring data dicts for each successful mating.
         """
         offspring = []
         processed_pairs = set()  # Track which pairs have already mated
@@ -375,11 +321,17 @@ class DotSimulation:
         return offspring
     
     def dot_to_food(self, dot):
-        """Convert dead dot to food based on its DNA investment"""
+        """
+        Convert a dead dot into a food item, energy scaled by its DNA investment.
+
+        DNA-weighted nutrition creates a predator payoff: hunting a highly-evolved
+        dot yields more energy than hunting a weak one. This makes attacking strong
+        opponents a viable (and risky) strategy rather than always targeting the weakest.
+        """
         # Food energy based on DNA strength, not remaining resources
         # More DNA points = better nutrition (risk/reward for evolution)
         
-        base_nutrition = 30  # Minimum food value
+        base_nutrition = get_config().world.dead_dot_base_nutrition
         dna_nutrition = dot.dna.get_total_points()  # Direct conversion: 1 DNA point = 1 food energy
         
         # Total food energy from corpse
@@ -393,15 +345,11 @@ class DotSimulation:
     
     def update(self, delta_time):
         """
-        Main simulation update
-        1. Update all dots
-        2. Handle combat
-        3. Handle reproduction
-        4. Check eating interactions
-        5. Cleanup depleted food
-        6. Cleanup dead dots (convert to food)
-        7. Respawn food if needed
-        8. Update time
+        Advance the simulation by delta_time seconds.
+
+        Order matters: dots update first, then combat, then mating, then eating.
+        This ensures all agents have committed to their actions before any
+        interaction is resolved, preventing order-of-processing artifacts.
         """
         if self.paused:
             return
@@ -559,7 +507,7 @@ class DotSimulation:
         
         # 7. Respawn food if critically low (scaled for larger environment)
         # Force dots to compete for scarce resources
-        if len(self.food) < 8:  # Increased from 3 to 8 for larger world
+        if len(self.food) < get_config().world.food_respawn_threshold:
             self.spawn_food()
         
         # 8. Check for extinction
@@ -595,7 +543,7 @@ class DotSimulation:
         Check if any dots are touching food
         Handle eating interaction
         """
-        eating_range = 15  # Distance to start eating
+        eating_range = get_config().world.eating_range
         
         for dot in self.dots:
             if not dot.resources.is_alive():
@@ -611,8 +559,8 @@ class DotSimulation:
                 distance = math.sqrt(dx*dx + dy*dy)
                 
                 if distance < eating_range:
-                    # Eat food (10 energy per frame at 60fps = 600/second)
-                    energy_gained = food.consume(10)
+                    # Eat food (configurable energy per frame)
+                    energy_gained = food.consume(get_config().world.eating_energy_per_frame)
                     
                     if energy_gained > 0:
                         # Use cascading eat system: energy → health → DNA

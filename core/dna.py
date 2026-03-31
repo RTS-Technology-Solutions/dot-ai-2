@@ -26,22 +26,23 @@ HOW IT WORKS:
 =====================================================================
 """
 
+from configs import get_config
+
+
 class Gene:
     """
-    GENE: The Basic Building Block of DNA 🧬
-    
-    A gene is like a "skill" the dot can have. Each gene has:
-    - enabled: Is this skill turned ON or OFF?
-    - points: How strong is this skill? (0-50 typical range)
-    
-    Example:
-    - vision_distance: enabled=True, points=15 → Can see 15 units away
-    - attack: enabled=False, points=0 → Cannot attack at all
-    
-    BIOLOGY LESSON:
-    This mirrors real genes! You have genes for eye color that are
-    either "expressed" (enabled=True) or not. The gene's "strength"
-    determines how much melanin you produce (points value).
+    A single tunable trait in a dot's genome.
+
+    Exists as a separate class rather than a plain number because a gene
+    has two independent dimensions: whether it is active at all (enabled)
+    and how strongly it is expressed (points). A disabled gene consumes
+    no budget and produces no effect — dot logic checks enabled before
+    applying any gene's formula, so this is a clean on/off gate.
+
+    Separating enabled from points also lets crossover and mutation
+    affect them independently: a gene can toggle on without gaining
+    points, or gain points without toggling — matching the biology of
+    gene expression vs. gene dosage.
     """
     
     def __init__(self, name, enabled=False, points=0):
@@ -50,10 +51,7 @@ class Gene:
         self.points = points       # How many DNA points invested?
     
     def to_dict(self):
-        """
-        Serialize gene to dictionary format
-        Used for saving/loading and sending DNA over networks
-        """
+        """Serialize to dict so DNA can be logged and reconstructed across sessions."""
         return {
             'enabled': self.enabled,
             'points': self.points
@@ -61,174 +59,135 @@ class Gene:
     
     @classmethod
     def from_dict(cls, name, data):
-        """
-        Recreate a gene from dictionary data
-        Used when loading saved genomes or receiving DNA from network
-        """
+        """Reconstruct a gene from logged data — needed for session replay and analysis."""
         return cls(name, data['enabled'], data['points'])
     
     def __repr__(self):
-        """
-        Human-readable gene description
-        Example: "Gene(vision_distance: ON, 15 pts)"
-        """
+        """Short label for console output — human-scannable without printing the full gene table."""
         status = "ON" if self.enabled else "OFF"
         return f"Gene({self.name}: {status}, {self.points} pts)"
 
 
 class DNAProfile:
     """
-    =====================================================================
-    DNA PROFILE: The Complete Genetic Blueprint 📋
-    =====================================================================
-    
-    This is the ENTIRE genetic code for one dot - like a complete genome!
-    It contains ALL possible genes organized into three categories:
-    
-    🧠 BRAIN GENES: Cognitive capacity (how smart the dot is)
-       - memory_size: How much information can it remember?
-       - sense_slots: How many different senses can it process?
-       - action_slots: How many different actions can it consider?
-    
-    👁️ SENSE GENES: What can the dot perceive?
-       - vision_distance: How far can it see?
-       - vision_fov: How wide is its field of view? (degrees)
-       - dot_detection: Can it sense other dots?
-       - food_detection: Can it smell food?
-       - dna_strength_detection: Can it identify strong vs weak opponents?
-    
-    💪 ACTION GENES: What can the dot DO?
-       - movement_speed: How fast can it move?
-       - attack: Combat damage capability
-       - defend: Damage reduction when defending
-       - replicate: Can it reproduce? (asexual or sexual)
-    
-    THE BUDGET SYSTEM:
-    Each dot has a total_points budget (default: 100). Every gene with
-    points > 0 COSTS those points. This creates strategic choices!
-    
-    Example:
-    - Spend 20 points on vision → Only 80 left for other abilities
-    - Spend 30 points on attack → Only 70 left for speed/senses
-    
-    WHY THIS MATTERS:
-    This forces dots to SPECIALIZE. A dot can't be perfect at everything!
-    This creates ECOLOGICAL NICHES:
-    - Hunters: High attack, high vision → Find and kill prey
-    - Scouts: High speed, high vision → Explore and find food
-    - Tanks: High defend, moderate attack → Survive battles
-    - Breeders: High replicate → Rapid population growth
-    
-    EVOLUTION DISCOVERS THE BEST MIX!
-    We don't program which build is "best" - the simulation finds it
-    through natural selection over many generations.
-    =====================================================================
+    The complete genome for one dot.
+
+    Exists as its own class because the genome is shared across multiple
+    systems — brain capacity, sense ranges, action availability, and
+    resource limits all read from the same DNA object. A standalone class
+    lets each system query only the genes it cares about without coupling
+    to the others.
+
+    The budget system (total_points) is enforced here rather than in
+    each consuming system so that the constraint has one source of truth.
+    A DNAProfile can only produce dots within its budget — any crossover
+    or mutation that would exceed it is automatically corrected.
+
+    earned_dna_points creates a second layer of selection pressure:
+    dots that behave successfully during their lifetime grow the DNA
+    budget their offspring inherit, rewarding strategies that generate
+    energy surpluses beyond what survival alone requires.
     """
     
     def __init__(self, total_points=100):
         """
-        Initialize a DNA profile with default gene configuration
-        
-        STARTING GENES:
-        We enable basic survival genes by default (vision, movement, eating)
-        Advanced genes (attack, defend, replicate) start disabled until
-        evolution discovers they're useful.
-        
-        This mirrors real evolution: Complex traits evolve over time,
-        they don't appear fully-formed in the first generation!
+        Initialize with defaults drawn from config so gene starting values
+        can be tuned per experiment profile without touching this class.
+
+        Basic survival genes start enabled because a dot that cannot
+        perceive or move cannot survive long enough to demonstrate any
+        other gene's value to the selection process.
+
+        Advanced genes (replicate, dna_strength_detection) start disabled
+        so the simulation must discover their value through mutation rather
+        than receiving them as gifts — this mirrors the evolutionary
+        challenge of evolving complex traits from simpler precursors.
         """
-        self.total_points = total_points  # Total DNA points available (starting budget)
-        self.earned_dna_points = 0  # DNA points earned during lifetime (Phase 4: Reward-based growth)
+        self.total_points = total_points  # DNA budget cap — scarcity is what makes gene allocation meaningful
+        self.earned_dna_points = 0  # Lifetime behavioral reward → inherited budget; creates pressure beyond just surviving
+
+        # Load gene defaults from config
+        _gd = get_config().dna.gene_defaults
+
+        # ===== BRAIN GENES =====
+        # These exist because cognitive capacity should cost something.
+        # A dot that perceives everything and evaluates all options with perfect memory
+        # would trivialize selection — the budget forces triage.
         
-        # ===== BRAIN GENES: Cognitive Capacity =====
-        # These determine how "smart" the dot is
+        self.brain_memory = Gene("memory", enabled=_gd.brain_memory_enabled, points=_gd.brain_memory_points)
+        # Without this, every frame is a fresh start — no way to reinforce or avoid experienced patterns
         
-        self.brain_memory = Gene("memory", enabled=True, points=8)
-        # 📚 Memory: How many past experiences the dot remembers
-        # Higher = better decision-making (learns from mistakes)
+        self.brain_sense_slots = Gene("sense_slots", enabled=_gd.brain_sense_slots_enabled, points=_gd.brain_sense_slots_points)
+        # Limits how many simultaneous inputs the brain processes — forces the dot to prioritize what it notices
         
-        self.brain_sense_slots = Gene("sense_slots", enabled=True, points=10)
-        # 👁️ Sense Slots: How many things it can perceive simultaneously
-        # Higher = aware of more food/threats at once
+        self.brain_action_slots = Gene("action_slots", enabled=_gd.brain_action_slots_enabled, points=_gd.brain_action_slots_points)
+        # Limits the candidate-action pool evaluated per frame — triage pressure on the decision engine
         
-        self.brain_action_slots = Gene("action_slots", enabled=True, points=7)
-        # 🎯 Action Slots: How many possible actions it can evaluate
-        # Higher = considers more options (attack? flee? eat?)
+        # ===== SENSE GENES =====
+        # These exist because dots with no perception cannot react to anything.
+        # Sense gene investment is what converts environmental information into decision inputs.
         
-        # ===== SENSE GENES: Perception Systems =====
-        # What can the dot detect in its environment?
+        self.vision_distance = Gene("vision_distance", enabled=_gd.vision_distance_enabled, points=_gd.vision_distance_points)
+        # Determines reaction window — a short-sighted dot gets ambushed because detection and contact happen simultaneously
         
-        self.vision_distance = Gene("vision_distance", enabled=True, points=15)
-        # 🔭 Vision Distance: How far the dot can see (in pixels)
-        # 15 points = ~150 pixel range
+        self.vision_fov = Gene("vision_fov", enabled=_gd.vision_fov_enabled, points=_gd.vision_fov_points)
+        # Narrows the directional blind spot — at max points this approaches 360° and eliminates ambush vulnerability
         
-        self.vision_fov = Gene("vision_fov", enabled=True, points=15)
-        # 📐 Field of View: Vision cone angle (in degrees)
-        # 15 points = ~150 degree FOV (wide peripheral vision)
+        self.dot_detection = Gene("dot_detection", enabled=_gd.dot_detection_enabled, points=_gd.dot_detection_points)
+        # Omnidirectional — a dot that can only see forward still needs to know when something is behind it
         
-        self.dot_detection = Gene("dot_detection", enabled=True, points=7)
-        # 🔵 Dot Detection: Can it sense other dots?
-        # Essential for combat and mating!
+        self.food_detection = Gene("food_detection", enabled=_gd.food_detection_enabled, points=_gd.food_detection_points)
+        # Omnidirectional scent-analog — without this, food that falls outside the vision cone is invisible
         
-        self.food_detection = Gene("food_detection", enabled=True, points=10)
-        # 🍎 Food Detection: Can it smell/see food?
-        # Essential for survival!
+        self.power_detection = Gene("power_detection", enabled=_gd.power_detection_enabled, points=_gd.power_detection_points)
+        # Reserved for future power-up mechanics — disabled until those features exist
         
-        self.power_detection = Gene("power_detection", enabled=False, points=0)
-        # ⚡ Power Detection: Can it sense power-ups? (Future feature)
+        self.food_amount_detection = Gene("food_amount_detection", enabled=_gd.food_amount_detection_enabled, points=_gd.food_amount_detection_points)
+        # Lets a dot prioritize high-energy food vs. depleted scraps — strategic foraging requires knowing what to chase
         
-        self.food_amount_detection = Gene("food_amount_detection", enabled=False, points=0)
-        # 📊 Food Amount: Can it tell how MUCH energy a food has?
-        # Strategic advantage - prioritize high-value food
+        self.dna_strength_detection = Gene("dna_strength_detection", enabled=_gd.dna_strength_detection_enabled, points=_gd.dna_strength_detection_points)
+        # Disabled by default — must be evolved because knowing opponent strength makes predation optimal,
+        # and we don't want to hand that advantage to first-generation dots
         
-        self.dna_strength_detection = Gene("dna_strength_detection", enabled=False, points=0)
-        # 💪 DNA Strength: Can it identify strong vs weak opponents?
-        # Crucial for smart hunting - avoid tough enemies, target weak ones
+        self.nearby_dot_density = Gene("nearby_dot_density", enabled=_gd.nearby_dot_density_enabled, points=_gd.nearby_dot_density_points)
+        # Needed for crowding-aware reproduction decisions — a dot that can't sense density reproduces into overcrowding
         
-        self.nearby_dot_density = Gene("nearby_dot_density", enabled=True, points=8)
-        # 🔢 Nearby Dot Density: Sense concentration of dots in area
-        # Helps avoid crowding, detect threats, find social groups
-        # Higher points = larger detection radius for density awareness
+        self.social_sense = Gene("social_sense", enabled=_gd.social_sense_enabled, points=_gd.social_sense_points)
+        # Reserved for cooperative mechanics — disabled until alliance/relationship features are implemented
         
-        self.social_sense = Gene("social_sense", enabled=False, points=0)
-        # 👥 Social Sense: Can it detect alliances/relationships? (Future)
+        # ===== ACTION GENES =====
+        # These exist because every behavior should cost something to unlock.
+        # An action gene being disabled is a categorical limitation, not a weak version of the action —
+        # a dot with attack disabled never enters combat logic at all.
         
-        # ===== ACTION GENES: Physical Capabilities =====
-        # What can the dot physically DO?
+        self.movement_speed = Gene("movement_speed", enabled=_gd.movement_speed_enabled, points=_gd.movement_speed_points)
+        # Faster movement improves both pursuit and escape, but every point here cannot go to attack or senses
         
-        self.movement_speed = Gene("movement_speed", enabled=True, points=8)
-        # 🏃 Movement Speed: Pixels per second movement rate
-        # 8 points = ~80 px/s base speed (increased when hungry)
+        self.movement_max_energy = Gene("movement_max_energy", enabled=_gd.movement_max_energy_enabled, points=_gd.movement_max_energy_points)
+        # A higher energy ceiling extends how far a dot can forage before starvation forces it back
         
-        self.movement_max_energy = Gene("movement_max_energy", enabled=True, points=10)
-        # 🔋 Max Energy: Maximum energy storage capacity
-        # Higher = can go longer without food
+        self.defend = Gene("defend", enabled=_gd.defend_enabled, points=_gd.defend_points)
+        # Damage reduction while stationary — the cost is the actions foregone while defending
         
-        self.defend = Gene("defend", enabled=True, points=5)
-        # 🛡️ Defend: Damage reduction when in defensive stance
-        # 5 points = -25% damage taken
-        
-        self.attack = Gene("attack", enabled=True, points=5)
-        # ⚔️ Attack: Damage dealt to enemies in combat
-        # 5 points = ~25 damage per attack
+        self.attack = Gene("attack", enabled=_gd.attack_enabled, points=_gd.attack_points)
+        # Enables combat — high food reward on kill, energy cost on miss, health risk if target fights back
         
         self.eat = Gene("eat", enabled=True, points=0)
-        # 🍴 Eat: ALWAYS enabled, no cost (all dots must eat to survive!)
-        # This is a "fundamental right" - you can't disable eating
+        # Always enabled with no cost — eating is a prerequisite for all other strategies, not a strategy itself
         
-        self.replicate = Gene("replicate", enabled=False, points=0)
-        # 👶 Replicate: Can reproduce (asexual or sexual)
-        # Must be evolved - not all dots can reproduce!
+        self.replicate = Gene("replicate", enabled=_gd.replicate_enabled, points=_gd.replicate_points)
+        # Disabled by default — a dot that has not evolved reproduction carries its DNA to extinction
         
-        self.revive = Gene("revive", enabled=False, points=0)
-        # 💚 Revive: Can resurrect dead allies (Future cooperative feature)
+        self.revive = Gene("revive", enabled=_gd.revive_enabled, points=_gd.revive_points)
+        # Reserved for cooperative revival mechanics — disabled until that system is implemented
     
     def get_all_genes(self):
         """
-        Return list of ALL genes in this DNA profile
-        
-        This uses Python introspection to find all Gene objects
-        attached to this DNA profile. Useful for iteration!
+        Returns all Gene objects via introspection.
+
+        Exists so iteration-based operations (validation, logging, mutation)
+        don't need to maintain a separate registry that can drift out of sync
+        with the actual gene attributes.
         """
         genes = []
         for attr_name in dir(self):
@@ -239,29 +198,21 @@ class DNAProfile:
     
     def get_allocated_points(self):
         """
-        Calculate TOTAL DNA points currently allocated to genes
-        
-        This sums up all the points from every enabled gene.
-        Example: vision(15) + speed(8) + attack(5) = 28 points allocated
-        
-        VALIDATION CHECK:
-        allocated_points MUST be ≤ total_points (the budget!)
+        Sum of all gene point values — needed to enforce the budget cap.
+
+        Called by is_valid() and by crossover after mutations to ensure
+        DNA integrity before an offspring is created.
         """
         return sum(gene.points for gene in self.get_all_genes())
     
     def get_gene_value(self, gene_name):
         """
-        Get the effective point value for a specific gene
-        
-        Returns 0 if:
-        - Gene is disabled (enabled=False)
-        - Gene doesn't exist
-        
-        Otherwise returns the gene's point value.
-        
-        USAGE:
-        This is how the simulation reads gene strength!
-        speed = dna.get_gene_value("movement_speed")  # Returns 8 if enabled
+        Returns the effective strength of a gene, or 0 if disabled/missing.
+
+        Consuming systems call this instead of reading gene attributes
+        directly so they get a 0 for disabled genes without needing to
+        check the enabled flag themselves. Disabled = zero effect,
+        regardless of stored point value.
         """
         if hasattr(self, gene_name):
             gene = getattr(self, gene_name)
@@ -271,74 +222,50 @@ class DNAProfile:
     
     def get_total_points(self):
         """
-        Get total DNA budget (starting + earned)
-        
-        Phase 4: Dots earn DNA points during their lifetime based on successful actions.
-        Offspring inherit their parent's EARNED DNA total, creating evolutionary pressure
-        toward successful strategies.
-        
-        TOTAL DNA BUDGET = starting budget + earned points
+        Returns the full DNA budget including lifetime-earned points.
+
+        Earned points are added to the inherited budget so offspring of
+        high-performing parents start with more allocation capacity —
+        the key mechanism linking individual behavior to generational fitness.
         """
         return self.total_points + self.earned_dna_points
     
     def earn_dna_points(self, amount):
         """
-        Award DNA points for successful actions during lifetime.
-        
-        Phase 4: Reward-based DNA growth
-        - Dots that survive longer earn more DNA
-        - Successful actions grant DNA growth
-        - Offspring inherit parent's earned DNA total
-        
-        This creates evolutionary pressure: Successful parents → stronger offspring!
+        Records behavioral success as an inherited budget increase.
+
+        Called by the resources cascade when a dot has full energy AND
+        full health and keeps eating — meaning it is thriving, not just
+        surviving. That surplus converts to offspring advantage.
         """
         if amount > 0:
             self.earned_dna_points += amount
     
     def get_available_points(self):
-        """
-        Calculate how many DNA points are still UNUSED
-        
-        Formula: available = budget - allocated
-        Example: 100 total - 85 allocated = 15 points available
-        
-        USE CASE:
-        Check if dot can afford to evolve a new gene!
-        if dna.get_available_points() >= 10:
-            enable_new_ability()
-        """
+        """Remaining budget — used to check whether a gene can be strengthened before committing."""
         return self.total_points - self.get_allocated_points()
     
     def is_valid(self):
         """
-        Validate that DNA doesn't exceed budget
-        
-        CRITICAL SAFETY CHECK:
-        Prevents "over-allocated" DNA profiles where total gene points
-        exceed the available budget. Invalid DNA can crash the simulation!
-        
-        Returns True if: allocated ≤ total_points
-        Returns False if: allocated > total_points (BUDGET OVERFLOW!)
+        Guards against over-allocation before offspring are created.
+
+        The budget constraint only matters if it is actually enforced.
+        Calling this after every crossover and mutation prevents an
+        invalid genome from silently entering the population.
         """
         allocated = self.get_allocated_points()
         return allocated <= self.total_points
     
     def unlock_random_ability(self):
         """
-        Enable a random currently-disabled gene
-        
-        EVOLUTION IN ACTION!
-        This simulates "genetic mutation" - randomly gaining new abilities.
-        
-        Returns:
-        - True if a gene was enabled
-        - False if all genes are already enabled (no more mutations possible)
-        
-        NOTE: The "eat" gene is excluded - it's ALWAYS enabled!
-        
-        USAGE:
-        When a dot survives a long time, it might "evolve" a new ability
-        as a reward for successful adaptation.
+        Enables one randomly-chosen disabled gene.
+
+        The "eat" gene is excluded because it is always on — including it
+        would waste mutation events on a no-op.
+
+        Returns True if a gene was unlocked, False if all genes are
+        already active so callers can decide whether to fall back to
+        a different mutation strategy.
         """
         import random
         disabled_genes = [g for g in self.get_all_genes() 
@@ -352,27 +279,20 @@ class DNAProfile:
     
     def add_dna_points(self, points):
         """
-        Increase the total DNA budget
-        
-        USE CASE:
-        Reward successful dots with more genetic potential!
-        Example: Survive 5 minutes → gain +10 DNA points
-        
-        This allows dots to evolve MORE COMPLEX over time.
-        Simple organisms → Complex organisms
+        Expands the inherited budget directly.
+
+        Used when an external system wants to increase a dot's genetic
+        potential in a tracked way that is preserved through crossover.
         """
         self.total_points += points
     
     def serialize(self):
         """
-        Convert DNA profile to dictionary format for saving/transmitting
-        
-        IMPORTANT FOR:
-        - Saving genomes to disk
-        - Sending DNA over network (multiplayer)
-        - Analyzing evolution data
-        
-        Returns a complete snapshot of the genome state.
+        Converts the genome to a plain dict for logging and persistence.
+
+        Paired with from_dict() to form the save/load round-trip. The
+        combined gene dict is what the metrics logger reads when recording
+        lineage data.
         """
         return {
             'total_points': self.total_points,
@@ -384,15 +304,11 @@ class DNAProfile:
     @classmethod
     def from_dict(cls, data):
         """
-        Recreate a DNA profile from serialized dictionary
-        
-        DESERIALIZATION:
-        Reverse of serialize() - takes saved data and rebuilds DNA.
-        
-        USAGE:
-        - Load saved genomes from disk
-        - Receive DNA from network
-        - Clone champion genomes for testing
+        Reconstructs a genome from a previously serialized dict.
+
+        Used by the logger when reloading saved sessions and by clone()
+        to produce independent copies that do not share gene references
+        with the original.
         """
         profile = cls(total_points=data['total_points'])
         profile.earned_dna_points = data.get('earned_dna_points', 0)  # Phase 4: Restore earned DNA
@@ -405,61 +321,31 @@ class DNAProfile:
     
     def clone(self):
         """
-        Create an exact copy of this DNA profile
-        
-        DEEP COPY:
-        Changes to the clone won't affect the original!
-        
-        USAGE:
-        - Asexual reproduction (parent clones itself)
-        - Testing "what-if" scenarios
-        - Preserving champion genomes
-        
-        BIOLOGY PARALLEL:
-        This is like bacteria reproduction - one cell splits into
-        two identical cells with the same DNA!
+        Deep-copies this genome via serialize/from_dict.
+
+        The round-trip through plain data ensures no gene object is shared
+        between original and clone — mutations to one cannot silently
+        affect the other.
         """
         return DNAProfile.from_dict(self.serialize())
     
     @staticmethod
     def crossover(parent_a, parent_b):
         """
-        =====================================================================
-        SEXUAL REPRODUCTION: DNA Crossover & Genetic Mixing 💕
-        =====================================================================
-        
-        This is the HEART of sexual reproduction! Two parents combine their
-        DNA to create offspring with a MIX of both genetic codes.
-        
-        WHY SEXUAL REPRODUCTION?
-        In nature, sexual reproduction creates GENETIC DIVERSITY:
-        - Parent A: Fast runner, weak fighter
-        - Parent B: Slow runner, strong fighter
-        - Child: MAYBE fast AND strong! (best of both)
-        - OR: Maybe slow AND weak (worst of both)
-        
-        This randomness is CRUCIAL for evolution:
-        - Some offspring will be better than parents (breakthrough!)
-        - Some will be worse (evolutionary dead-end)
-        - Only the BEST survive and pass on genes
-        
-        THE ALGORITHM:
-        1. Average the DNA budgets: child gets (100 + 120) / 2 = 110 points
-        2. For each gene:
-           - Enabled state: 50/50 chance from either parent
-           - Points value: Average both parents ± random variation
-        3. Validation: Scale down if total exceeds budget
-        
-        BIOLOGY LESSON:
-        This mirrors real sexual reproduction! You get ~50% of genes from
-        mom, ~50% from dad. But WHICH genes? Random! That's why siblings
-        look different despite having the same parents.
-        
-        MACHINE LEARNING CONCEPT:
-        This is a "genetic algorithm" - we're searching the solution space
-        by combining successful strategies and adding random variation.
-        Over generations, optimal DNA patterns emerge!
-        =====================================================================
+        Produces one offspring genome by blending two parent genomes.
+
+        Budget is averaged so a high-earning parent lifts the child's
+        capacity, giving behavioral success measurable influence over
+        the next generation's genetic range.
+
+        Each gene's enabled flag is drawn randomly from one parent (50/50).
+        Points are averaged then jittered ±2 to introduce variation without
+        discarding either parent's strategy entirely. Over many generations
+        this random walk finds combinations neither parent could reach alone.
+
+        If the resulting allocation exceeds the budget, all gene values are
+        scaled down proportionally rather than truncated arbitrarily, so the
+        relative specialization ratios of the parents are preserved.
         """
         import random
         
@@ -529,16 +415,7 @@ class DNAProfile:
         return child_dna
     
     def __repr__(self):
-        """
-        String representation for debugging and logging
-        
-        Example output:
-        "DNAProfile(85/100 points, 12 genes active)"
-        
-        Shows:
-        - allocated/total points
-        - how many genes are currently enabled
-        """
+        """One-line budget and activity summary for console output and logs."""
         allocated = self.get_allocated_points()
         active_count = sum(1 for g in self.get_all_genes() if g.enabled)
         return f"DNAProfile({allocated}/{self.total_points} points, {active_count} genes active)"

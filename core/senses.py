@@ -1,14 +1,24 @@
 """
-Sense System - Vision and Detection
-Handles what dots can perceive about their environment
+Perception is isolated from Dot because vision cone math, detection radii, and
+perceived-world enrichment all form their own non-trivial subsystem. The Dot calls
+perceive() and gets back a plain dict; it never needs to know how that dict was built.
+This boundary also makes it straightforward to add new sense types without touching
+agent logic.
 """
 
 import math
+from configs import get_config
 
 
 class VisionSense:
     """
-    Vision cone - dots can see entities within distance and FOV
+    Directional perception — the dot sees what is in front of it.
+
+    Exists because vision_distance and vision_fov genes need a concrete payoff:
+    a dot that allocates points to vision should see measurably farther and wider
+    than one that doesn't. The cone model makes that investment quantifiable and
+    creates a spatial tradeoff (narrow but long vs wide but short) that selection
+    can act on.
     """
     
     def __init__(self, dna_profile):
@@ -19,28 +29,42 @@ class VisionSense:
         self.fov = self.calculate_fov()  # Field of view in degrees
     
     def calculate_distance(self):
-        """Vision distance from DNA"""
+        """
+        Returns how far this dot can see.
+
+        Scales with gene points so investing in vision_distance produces
+        a measurable range advantage over dots that skip it.
+        """
         if not self.dna.vision_distance.enabled:
             return 0
         
-        base = 100  # pixels
-        bonus = self.dna.vision_distance.points * 10
+        _scfg = get_config().senses
+        base = _scfg.vision_distance_base
+        bonus = self.dna.vision_distance.points * _scfg.vision_distance_per_point
         return base + bonus
     
     def calculate_fov(self):
-        """Field of view angle from DNA"""
+        """
+        Returns the cone angle in degrees.
+
+        A wider FOV catches peripheral threats without extending range, creating
+        a different strategic tradeoff from investing in vision_distance.
+        """
         if not self.dna.vision_fov.enabled:
             return 0
         
-        base = 90  # degrees
-        bonus = self.dna.vision_fov.points * 6
-        return min(360, base + bonus)
+        _scfg = get_config().senses
+        base = _scfg.vision_fov_base
+        bonus = self.dna.vision_fov.points * _scfg.vision_fov_per_point
+        return min(_scfg.vision_fov_max, base + bonus)
     
     def can_see(self, observer_pos, observer_facing, target_pos):
         """
-        Check if target is visible
-        observer_facing: [vx, vy] direction vector
-        Returns: True if within distance and FOV
+        True if target is within distance and inside the FOV cone.
+
+        Uses velocity as the facing direction so a moving dot automatically
+        looks in the direction it’s traveling. No separate orientation state
+        is needed, which keeps the Dot simpler.
         """
         if self.distance == 0 or self.fov == 0:
             return False
@@ -80,9 +104,11 @@ class VisionSense:
     
     def get_visible_entities(self, observer_pos, observer_facing, entities):
         """
-        Filter entities to only those visible
-        entities: list of dicts with 'position' key
-        Returns: list of visible entities
+        Filters an entity list to those visible from this vantage point.
+
+        Callers pass the full world entity list; this method shields them
+        from the cone geometry so add_dot / add_food callers don’t need
+        to know how vision is calculated.
         """
         visible = []
         for entity in entities:
@@ -93,8 +119,12 @@ class VisionSense:
 
 class DetectionSense:
     """
-    Detection - sense nearby entities regardless of facing direction
-    Simpler than vision, just distance-based
+    Omnidirectional perception — the dot senses what is nearby regardless of facing.
+
+    A separate class from VisionSense because detection is not direction-dependent:
+    a dot with food_detection gene can sense food behind it, while vision requires
+    turning to face it first. This distinction creates a meaningful gene tradeoff
+    the simulation can exploit through selection.
     """
     
     def __init__(self, dna_profile):
@@ -105,25 +135,38 @@ class DetectionSense:
         self.food_range = self.calculate_food_range()
     
     def calculate_dot_range(self):
-        """Detection range for other dots"""
+        """
+        Returns omnidirectional awareness range for other dots.
+
+        Independent of facing direction, so even a stationary dot can sense
+        approaching threats from any angle — this is why the gene is worth
+        investing in beyond what vision alone provides.
+        """
         if not self.dna.dot_detection.enabled:
             return 0
         
-        base = 50  # pixels
-        bonus = self.dna.dot_detection.points * 8
+        _scfg = get_config().senses
+        base = _scfg.dot_detection_base
+        bonus = self.dna.dot_detection.points * _scfg.dot_detection_per_point
         return base + bonus
     
     def calculate_food_range(self):
-        """Detection range for food"""
+        """
+        Returns food detection range — effectively smell.
+
+        Allows food-finding without line of sight, which matters when food
+        has been partially consumed and is tucked behind a cluster of other dots.
+        """
         if not self.dna.food_detection.enabled:
             return 0
         
-        base = 80  # pixels
-        bonus = self.dna.food_detection.points * 10
+        _scfg = get_config().senses
+        base = _scfg.food_detection_base
+        bonus = self.dna.food_detection.points * _scfg.food_detection_per_point
         return base + bonus
     
     def detect_dots(self, observer_pos, dots):
-        """Get dots within detection range"""
+        """Returns dots within omnidirectional range. Pre-filtered so callers receive only relevant entities."""
         if self.dot_range == 0:
             return []
         
@@ -135,7 +178,7 @@ class DetectionSense:
         return detected
     
     def detect_food(self, observer_pos, food):
-        """Get food within detection range"""
+        """Returns food within omnidirectional range. Pre-filtered so callers receive only relevant entities."""
         if self.food_range == 0:
             return []
         
@@ -155,7 +198,13 @@ class DetectionSense:
 
 class PerceptionSystem:
     """
-    Combines all senses to create world perception for a dot
+    Aggregates all sense channels into a single perception call.
+
+    Exists so the Dot calls perceive() once per tick rather than managing
+    VisionSense, DetectionSense, and density objects separately. This class
+    also owns the union logic (merge + deduplicate vision and detection results)
+    and the enrichment passes (can_reproduce flags, DNA strength) so those
+    concerns don’t leak into agent logic.
     """
     
     def __init__(self, dna_profile):
@@ -167,18 +216,29 @@ class PerceptionSystem:
         self.density_radius = self.calculate_density_radius()
     
     def calculate_density_radius(self):
-        """Calculate nearby dot density sensing radius from DNA"""
+        """
+        Returns the population density sensing radius.
+
+        Density awareness enables a dot to detect crowding even when individual
+        dots fall outside the vision cone — essential for avoiding reproductive
+        attempts in already-saturated areas.
+        """
         if not self.dna.nearby_dot_density.enabled:
             return 0
         
-        base = 100  # pixels
-        bonus = self.dna.nearby_dot_density.points * 12  # 12px per point
+        _scfg = get_config().senses
+        base = _scfg.density_radius_base
+        bonus = self.dna.nearby_dot_density.points * _scfg.density_radius_per_point
         return base + bonus
     
     def perceive(self, dot_pos, dot_velocity, world_state):
         """
-        Create perception of world from dot's perspective
-        Returns: dict with visible/detected entities
+        Build the full world snapshot this dot sees this tick.
+
+        Merges directional vision and omnidirectional detection into a unified
+        entity list, then enriches it with can_reproduce flags and DNA strength
+        when the corresponding genes are active. Returns plain dicts so the Dot
+        can pass perceived_world to decide_action without creating system coupling.
         """
         # Get all entities from world
         all_dots = world_state.get('dots', [])
@@ -234,11 +294,11 @@ class PerceptionSystem:
         }
     
     def get_debug_visuals(self, dot_pos):
-        """Get debug visualization data for rendering"""
+        """Returns circles/arcs for the renderer’s debug overlay. Stub — sense system owns the range values so visuals are generated here when needed."""
         return []  # Empty for now, can add visual debug circles later
     
     def _unique_entities(self, entities):
-        """Remove duplicates based on ID"""
+        """Deduplicates the merged vision+detection list so a dot visible via both channels isn’t processed twice."""
         seen = set()
         unique = []
         for entity in entities:

@@ -1,6 +1,9 @@
 """
-Dot entity implementation for DOT AI 2.0
-Autonomous agent with DNA-based abilities, brain, resources, and senses.
+The dot is defined here, not in simulation.py, because its behavior logic
+is complex enough to demand isolation. Keeping the agent class separate from
+the world class means neither knows more about the other than it needs to —
+the simulation calls update(), the dot calls nothing on the simulation directly;
+all communication flows through the world_state dict and the update() return value.
 """
 
 import math
@@ -11,12 +14,22 @@ from .brain import Brain
 from .resources import Resources
 from .senses import PerceptionSystem
 from .actions import ActionManager
+from configs import get_config
 
 
 class Dot:
     """
-    Autonomous agent with DNA, brain, resources, and senses.
-    Makes decisions based on utility calculations and executes actions.
+    A single agent in the ecosystem.
+
+    Exists as a class rather than a data struct because an agent has persistent
+    state (memory, current action, target) that must survive across update calls.
+    This is also where DNA-to-behavior translation happens — every tunable constant
+    lives in get_config(), but the logic for how those constants combine into a
+    decision is owned here.
+
+    decide_action() and execute_action() are kept separate because decision and
+    execution are distinct cognitive phases. The split makes it possible to inspect
+    the elected action before it runs, which matters for metrics and debugging.
     """
     
     def __init__(self, dot_id: int, position: Tuple[float, float], dna: DNAProfile):
@@ -46,20 +59,24 @@ class Dot:
     
     def update(self, dt: float, world_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Main update loop for the dot.
-        Returns offspring data dict if reproduction occurred, None otherwise.
+        Advance this dot by one simulation tick.
+
+        Returns offspring data if reproduction occurred, None otherwise.
+        This return pattern lets the simulation collect all new agents in a single
+        pass over the dot list without maintaining a separate spawning queue.
         """
         # 1. Deplete energy based on movement
         speed = math.sqrt(self.velocity[0]**2 + self.velocity[1]**2)
         is_moving = speed > 0.1
         
         # Energy costs
-        IDLE_ENERGY_COST = 2.0  # per second
-        MOVEMENT_ENERGY_COST = 1.0  # per second
+        _bcfg = get_config().behavior
+        IDLE_ENERGY_COST = _bcfg.idle_energy_cost
+        MOVEMENT_ENERGY_COST = _bcfg.movement_energy_cost
         
         if self.is_defending:
-            # Defending costs 3% of max energy per second
-            defend_cost = self.resources.max_energy * 0.03 * dt
+            # Defending costs a configurable fraction of max energy per second
+            defend_cost = self.resources.max_energy * _bcfg.defend_energy_cost_pct * dt
             self.resources.deplete_energy(defend_cost)
         elif is_moving:
             self.resources.deplete_energy((IDLE_ENERGY_COST + MOVEMENT_ENERGY_COST) * dt)
@@ -68,7 +85,7 @@ class Dot:
         
         # 2. Apply starvation damage
         if self.resources.is_starving():
-            STARVATION_DAMAGE = 1.5  # per second
+            STARVATION_DAMAGE = _bcfg.starvation_damage
             self.resources.deplete_health(STARVATION_DAMAGE * dt)
         
         # 3. Check if dead
@@ -96,8 +113,13 @@ class Dot:
     
     def decide_action(self, perceived_world: Dict[str, Any]) -> str:
         """
-        Utility-based AI decision making.
-        Calculates utility scores for each action and picks the highest.
+        Select the action with the highest utility score.
+
+        Utility AI is used instead of a priority rule tree because it degrades
+        gracefully when multiple needs compete. Hunger, danger, and reproductive
+        drive are all real-valued scores that compose linearly rather than
+        fragmenting into a fragile nested if/else chain. Adding a new behavior
+        means adding one utility calculation, not auditing a priority chain.
         """
         # Get current state
         energy_pct = self.resources.energy / self.resources.max_energy
@@ -117,23 +139,21 @@ class Dot:
         # Initialize utilities
         utilities = {}
         
-        # 1. SEEK FOOD UTILITY
-        # Higher when hungry, lower when satiated
+        # 1. SEEK FOOD — hunger scales the weight so survival urgency can always outbid other drives
         perceived_food = perceived_world.get('food', [])
+        _bcfg = get_config().behavior
         if perceived_food:
-            food_utility = hunger_pct * 10.0
-            # Bonus if very hungry
-            if hunger_pct > 0.7:
-                food_utility *= 2.0
+            food_utility = hunger_pct * _bcfg.food_hunger_scale
+            # Past this threshold other actions can't meaningfully improve survival — lock onto food
+            if hunger_pct > _bcfg.food_hungry_threshold:
+                food_utility *= _bcfg.food_hungry_bonus
             utilities['seek_food'] = food_utility
         else:
             utilities['seek_food'] = 0.0
         
-        # 2. ATTACK UTILITY
-        # GOAL: Attack when hungry AND enemy will provide good food
-        # Attack = Risk (energy cost, damage) vs Reward (food from kill)
+        # 2. ATTACK — only worth the risk when hunger makes a kill's caloric value exceed the cost of fighting
         perceived_dots = perceived_world.get('dots', [])
-        if attack_points > 0 and perceived_dots and hunger_pct > 0.3:  # Only attack if moderately hungry
+        if attack_points > 0 and perceived_dots and hunger_pct > _bcfg.attack_hunt_threshold:
             best_target = None
             max_score = -float('inf')
             
@@ -145,15 +165,15 @@ class Dot:
                 enemy_max_health = dot_info.get('max_health', 100)
                 enemy_state = dot_info.get('state', 'alive')
                 
-                # Calculate weakness based on BOTH health and energy
+                # Strength is HP + energy together; full HP but empty energy still means a poor fighter
                 health_weakness = 1.0 - (enemy_health / max(1, enemy_max_health))
                 energy_weakness = 1.0 - (enemy_energy / max(1, dot_info.get('max_energy', 100)))
                 
-                # Starving dots are PRIME targets (huge multiplier)
+                # A starving dot can't flee or deal effective damage — the exploitation window is narrow
                 if enemy_state == 'starving':
-                    weakness_score = 2.0  # 200% - easy kill, slow movement, dying
+                    weakness_score = _bcfg.attack_starving_weakness
                 else:
-                    # Combine health and energy weakness (energy more important - indicates capability)
+                    # Energy weighted higher because it governs movement and action speed, not just durability
                     weakness_score = (energy_weakness * 0.6 + health_weakness * 0.4)
                 
                 # Calculate expected food value from kill
@@ -161,30 +181,25 @@ class Dot:
                     enemy_dna = dot_info['perceived_dna_strength']
                     food_value = 30 + enemy_dna
                 else:
-                    food_value = 100  # Assume average
+                    food_value = _bcfg.attack_food_value_assumption
                 
-                # Score prioritizes: starving > low energy > low health, with food value consideration
-                score = weakness_score * (food_value / 130.0)
+                # Priority order reflects kill probability: starving → low energy → low health
+                score = weakness_score * (food_value / _bcfg.attack_food_value_normalizer)
                 
                 if score > max_score:
                     max_score = score
                     best_target = dot_info
             
             if best_target:
-                # Attack utility based on:
-                # - Own strength (health)
-                # - Hunger level (need food)
-                # - Attack points (capability)
-                # - Target score (weakness + food value)
                 own_strength = health_pct
-                hunger_motivation = hunger_pct * 1.5  # More hungry = more motivated
-                attack_utility = max_score * (attack_points / 50.0) * own_strength * hunger_motivation * 3.0
+                hunger_motivation = hunger_pct * _bcfg.attack_hunger_motivation_scale
+                attack_utility = max_score * (attack_points / 50.0) * own_strength * hunger_motivation * _bcfg.attack_multiplier
                 
                 # Reduce if low health (risky)
-                if health_pct < 0.3:
-                    attack_utility *= 0.1  # Very risky when weak
-                elif health_pct < 0.6:
-                    attack_utility *= 0.5  # Somewhat risky
+                if health_pct < _bcfg.attack_low_health_critical:
+                    attack_utility *= _bcfg.attack_low_health_penalty_critical
+                elif health_pct < _bcfg.attack_low_health_moderate:
+                    attack_utility *= _bcfg.attack_low_health_penalty_moderate
                 
                 utilities['attack'] = attack_utility
                 self.attack_target = best_target['id']
@@ -194,54 +209,44 @@ class Dot:
             utilities['attack'] = 0.0
             self.attack_target = None
         
-        # 3. DEFEND UTILITY
-        # GOAL: Only defend when ACTIVELY under threat (being attacked OR very weak)
-        # Defending costs energy and prevents food-seeking
+        # 3. DEFEND — blocking caps the damage rate; worth it only when threat level exceeds the energy cost
         if defend_points > 0:
             danger_level = 0.0
             
-            # REAL danger: Multiple enemies nearby AND low health
+            # One enemy when healthy can be fought; it's overwhelm + low HP together that demands defense
             threat_count = len(perceived_dots)
             
-            # Only defend if:
-            # 1. Surrounded (3+ enemies) OR
-            # 2. Low health (<40%) with enemies nearby
-            if threat_count >= 3:
-                danger_level = min(1.0, (threat_count - 2) * 0.4)  # Ramps up with crowd
-            elif health_pct < 0.4 and threat_count > 0:
-                danger_level = (1.0 - health_pct) * 0.8  # Desperate defense when weak
+            if threat_count >= _bcfg.defend_threat_count_threshold:
+                danger_level = min(1.0, (threat_count - (_bcfg.defend_threat_count_threshold - 1)) * _bcfg.defend_threat_danger_scale)
+            elif health_pct < _bcfg.defend_health_threshold and threat_count > 0:
+                danger_level = (1.0 - health_pct) * _bcfg.defend_health_danger_scale
             
             if danger_level > 0:
-                defend_utility = danger_level * (defend_points / 50.0) * 2.0
+                defend_utility = danger_level * (defend_points / 50.0) * _bcfg.defend_multiplier
                 utilities['defend'] = defend_utility
             else:
                 utilities['defend'] = 0.0
         else:
             utilities['defend'] = 0.0
         
-        # 4. REPLICATE UTILITY (Asexual - high cost backup)
-        # Higher when: high energy, high health, have replicate points, fewer dots nearby
-        # Only triggers at 80% energy (fallback if no mate found)
-        # Phase 4: Use density sensor for better crowding awareness
+        # 4. REPLICATE (asexual) — fallback when no mate is found; high energy threshold because the cost is steep
         if replicate_points > 0:
-            # Check if we have enough energy (need 80%)
-            if energy_pct >= 0.8 and health_pct >= 0.7:
-                # Use density sensor if available, otherwise fall back to visible dots
+            # Check if we have enough energy (threshold from config)
+            if energy_pct >= _bcfg.replicate_energy_threshold and health_pct >= _bcfg.replicate_health_threshold:
+                # Density sensor sees outside the vision cone — prefer it because visible dot count underestimates crowd
                 nearby_density = perceived_world.get('nearby_density', len(perceived_dots))
-                crowding_penalty = min(1.0, nearby_density * 0.15)  # Less penalty, but still matters
-                replicate_utility = (replicate_points / 50.0) * energy_pct * health_pct * (1.0 - crowding_penalty) * 2.0  # Lower than mate-seeking
+                crowding_penalty = min(1.0, nearby_density * _bcfg.replicate_crowding_scale)
+                replicate_utility = (replicate_points / 50.0) * energy_pct * health_pct * (1.0 - crowding_penalty) * _bcfg.replicate_multiplier
                 utilities['replicate'] = replicate_utility
             else:
                 utilities['replicate'] = 0.0
         else:
             utilities['replicate'] = 0.0
         
-        # 5. SEEK MATE UTILITY (Sexual - preferred, lower cost)
-        # Higher when: moderate energy (40%+), healthy, potential mates nearby
-        # Preferred over asexual due to lower cost and genetic diversity
+        # 5. SEEK MATE (sexual) — preferred over asexual: lower energy cost and offspring inherit novel gene combinations
         if replicate_points > 0:
-            if energy_pct >= 0.4 and health_pct >= 0.7:
-                # Look for potential mates (exclude self!)
+            if energy_pct >= _bcfg.seek_mate_energy_threshold and health_pct >= _bcfg.seek_mate_health_threshold:
+                # Exclude self — mating with self produces a clone, negating the point of sexual reproduction
                 potential_mates = [d for d in perceived_dots 
                                   if d.get('id') != self.id and  # Don't mate with self!
                                   d.get('health', 0) > 70 and 
@@ -249,11 +254,11 @@ class Dot:
                 
                 if potential_mates:
                     # Stronger utility than asexual (lower cost = more appealing)
-                    mate_count_bonus = min(1.0, len(potential_mates) * 0.3)  # More mates = better
-                    mate_utility = (replicate_points / 50.0) * energy_pct * health_pct * (1.0 + mate_count_bonus) * 4.0
+                    mate_count_bonus = min(1.0, len(potential_mates) * _bcfg.seek_mate_count_bonus_scale)
+                    mate_utility = (replicate_points / 50.0) * energy_pct * health_pct * (1.0 + mate_count_bonus) * _bcfg.seek_mate_multiplier
                     utilities['seek_mate'] = mate_utility
                     
-                    # Choose best mate (prioritize health, proximity)
+                    # Health is a fitness proxy: high health at mating time correlates with effective DNA allocation
                     best_mate = max(potential_mates, key=lambda m: m.get('health', 0))
                     self.mate_target = best_mate['id']
                 else:
@@ -270,30 +275,25 @@ class Dot:
         perceived_food = perceived_world.get('food', [])
         perceived_dots = [d for d in perceived_world.get('dots', []) if d.get('id') != self.id]
         
-        # 6. EXPLORE UTILITY (when nothing visible)
-        # Small reward for movement to encourage exploration
+        # 6. EXPLORE — without this, dots with no visible stimuli would idle and starve; movement keeps them finding food patches
         nothing_visible = len(perceived_food) == 0 and len(perceived_dots) == 0
         
         if nothing_visible:
-            # Encourage exploration when blind - desperate when low resources
-            explore_base = 3.0  # Higher baseline
-            hunger_boost = hunger_pct * 5.0  # Strong hunger motivation (0-5)
-            health_boost = health_urgency * 2.0  # Panic when hurt (0-2)
-            explore_utility = explore_base + hunger_boost + health_boost  # 3-10 utility
+            # Scale urgency with hunger: a healthy dot wanders; a hungry dot needs to reach food quickly
+            explore_base = _bcfg.explore_base
+            hunger_boost = hunger_pct * _bcfg.explore_hunger_scale
+            health_boost = health_urgency * _bcfg.explore_health_scale
+            explore_utility = explore_base + hunger_boost + health_boost
             utilities['explore'] = explore_utility
         else:
             utilities['explore'] = 0.0
         
-        # 7. IDLE UTILITY (heavily penalized, especially in crowds)
-        # Idling when resources are low = death sentence
-        # Idling in crowds = starvation trap (Phase 4 density awareness)
-        # Severe penalties for lazy behavior
+        # 7. IDLE — exists as a floor, not a reward; penalized in crowds because stationary dots block mates and food access
         nearby_density = perceived_world.get('nearby_density', 0)
-        density_penalty = min(nearby_density * 0.3, 3.0)  # Up to 3.0 penalty for crowds
-        idle_penalty = health_urgency * 1.5 + hunger_pct * 2.0 + density_penalty
-        utilities['idle'] = max(0.01, 0.3 - idle_penalty)  # Very low baseline, minimum 0.01
+        density_penalty = min(_bcfg.idle_density_penalty_max, nearby_density * _bcfg.idle_density_penalty_scale)
+        idle_penalty = health_urgency * _bcfg.idle_health_urgency_scale + hunger_pct * _bcfg.idle_hunger_penalty_scale + density_penalty
+        utilities['idle'] = max(_bcfg.idle_min, _bcfg.idle_base - idle_penalty)
         
-        # Pick action with highest utility
         best_action = max(utilities, key=utilities.get)
         
         # Debug: Print utilities occasionally
@@ -307,7 +307,10 @@ class Dot:
     
     def execute_action(self, perceived_world: Dict[str, Any], world_state: Dict[str, Any], dt: float) -> Optional[DNAProfile]:
         """
-        Execute the decided action.
+        Dispatch to the appropriate execute_* handler for the chosen action.
+
+        Split from decide_action() so the tick pipeline reads as three
+        distinct phases: perceive → decide → execute.
         Returns offspring DNA if replication occurred, None otherwise.
         """
         if self.current_action == "seek_food":
@@ -357,7 +360,13 @@ class Dot:
             return None
     
     def execute_attack(self, perceived_world: Dict[str, Any], world_state: Dict[str, Any], dt: float) -> None:
-        """Execute attack action - move toward target."""
+        """
+        Move toward the elected attack target.
+
+        Actual damage is dealt by the simulation when proximity is confirmed,
+        not here, so both dots in a fight are at their final positions before
+        damage is resolved.
+        """
         if self.attack_target is not None:
             # Find target dot
             perceived_dots = perceived_world.get('dots', [])
@@ -371,14 +380,23 @@ class Dot:
         return None
     
     def execute_defend(self):
-        """Execute defend action - stop moving and activate defense."""
+        """
+        Activate the defending flag and stop movement.
+
+        The defending flag is what AttackAction checks for mitigation — the
+        cost and reduction logic live there, not here. This method exists only
+        to set that flag and zero velocity.
+        """
         self.is_defending = True
         self.velocity = [0.0, 0.0]
     
     def execute_replicate(self) -> Optional[Dict[str, Any]]:
         """
-        Execute asexual replication action.
-        Returns offspring data if successful, None otherwise.
+        Trigger asexual reproduction via the action manager.
+
+        Used as a fallback when no mate is available. The action manager
+        owns gene mutation and energy cost logic — this method connects
+        the utility decision to that machinery.
         """
         world_state = {'bounds': {'width': 1200, 'height': 800}}
         result = self.action_manager.replicate.execute(self, world_state, 0.0, mate=None)
@@ -390,8 +408,12 @@ class Dot:
     
     def execute_seek_mate(self, perceived_world: Dict[str, Any], world_state: Dict[str, Any], dt: float) -> Optional[Dict[str, Any]]:
         """
-        Execute mate-seeking action - move toward mate and attempt sexual reproduction if in range.
-        Returns offspring data or mate request if successful, None otherwise.
+        Move toward a potential mate; signal mate_request when in range.
+
+        Crossover is handled by the simulation, not here, because both partners
+        must independently elect seek_mate and point at each other before the
+        simulation will execute the crossover. This method only moves and signals.
+        Returns a MATE_REQUEST dict when in range, None while still approaching.
         """
         if self.mate_target is None:
             return None
@@ -417,7 +439,7 @@ class Dot:
         distance = math.sqrt(dx*dx + dy*dy)
         
         # Check if in mating range (30 pixels)
-        MATING_RANGE = 30.0
+        MATING_RANGE = get_config().behavior.mating_range
         
         if distance <= MATING_RANGE:
             # In range! Signal ready for mating
@@ -433,7 +455,17 @@ class Dot:
             return None
     
     def move_toward(self, target: Tuple[float, float], world_state: Dict[str, Any], dt: float):
-        """Move toward a target position."""
+        """
+        Set velocity toward target and advance position by dt.
+
+        Speed is amplified when the dot is starving because the window for
+        finding food before death closes faster — without urgency multipliers,
+        a starving dot moves at the same speed as a comfortable one and may
+        die before reaching visible food.
+
+        Boundary clamping zeroes the relevant velocity component on contact
+        rather than reflecting it, so dots pressed against a wall don’t oscillate.
+        """
         # Calculate direction
         dx = target[0] - self.position[0]
         dy = target[1] - self.position[1]
@@ -441,15 +473,16 @@ class Dot:
         
         if distance > 1.0:
             # Base speed from DNA
-            base_speed = 50  # pixels/second
-            bonus_speed = self.dna.get_gene_value('movement_speed') * 5
+            _bcfg = get_config().behavior
+            base_speed = _bcfg.movement_speed_base
+            bonus_speed = self.dna.get_gene_value('movement_speed') * _bcfg.movement_speed_per_point
             speed = base_speed + bonus_speed
             
             # Urgency multipliers
             if self.resources.is_starving():
-                speed *= 0.1  # 10% speed when starving (weak)
-            elif self.resources.hunger > 0.7:
-                speed *= 1.5  # 50% faster when very hungry (desperate)
+                speed *= _bcfg.starving_speed_multiplier
+            elif self.resources.hunger > _bcfg.hungry_speed_threshold:
+                speed *= _bcfg.hungry_speed_multiplier
             
             # Normalize and apply speed
             self.velocity[0] = (dx / distance) * speed
@@ -460,7 +493,7 @@ class Dot:
             self.position[1] += self.velocity[1] * dt
             
             # ENFORCE BOUNDARIES - keep dots on screen (use dynamic world bounds)
-            BOUNDARY_MARGIN = 10  # pixels from edge
+            BOUNDARY_MARGIN = _bcfg.movement_boundary_margin
             bounds = world_state.get('bounds', {'width': 1200, 'height': 800})  # Fallback to old size
             MAX_X = bounds['width'] - BOUNDARY_MARGIN
             MAX_Y = bounds['height'] - BOUNDARY_MARGIN
@@ -482,7 +515,13 @@ class Dot:
             self.velocity = [0.0, 0.0]
     
     def eat(self, food_energy: float):
-        """Consume food with cascading priority: energy → health → DNA."""
+        """
+        Deliver food energy into the resource cascade and record the event.
+
+        The brain reward and memory write happen here rather than in Resources
+        because an eating memory connects spatial context to an energy outcome —
+        that relationship belongs in the agent layer, not in the resource manager.
+        """
         result = self.resources.eat(food_energy, self.brain)
         
         # Reward for successful eating (energy gained)
@@ -503,8 +542,11 @@ class Dot:
     
     def take_damage(self, damage: float, attacker_id: int) -> Dict[str, Any]:
         """
-        Take damage from an attack.
-        Returns dict with damage taken and whether killed.
+        Route incoming damage through the action manager’s receive_damage logic.
+
+        Living here rather than directly in Resources lets AttackAction apply
+        defense mitigation (which knows the defender’s DNA) before any health
+        is subtracted. Returns the result dict so the simulation can log kills.
         """
         result = self.action_manager.attack.receive_damage(
             self, 
@@ -519,7 +561,13 @@ class Dot:
         return result
     
     def get_state(self) -> Dict[str, Any]:
-        """Export current state for rendering/serialization."""
+        """
+        Produce a snapshot of this dot for the renderer and logger.
+
+        Returns plain data (no object references) so callers can safely
+        pass the dict through queues or serialize it without needing to
+        know Dot internals.
+        """
         # Determine state string
         if not self.resources.is_alive():
             state = "dead"
@@ -551,5 +599,5 @@ class Dot:
         }
     
     def serialize(self) -> Dict[str, Any]:
-        """Alias for get_state() for compatibility with simulation"""
+        """Alias for get_state() — exists for call-site compatibility."""
         return self.get_state()

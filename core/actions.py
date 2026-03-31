@@ -1,29 +1,44 @@
 """
-Action System - Combat, Reproduction, and Interactions
-Handles all dot-to-dot and dot-to-world interactions
+Action logic is separated from Dot because actions involving two entities have
+outcomes that depend on both participants' DNA. Keeping AttackAction here means
+damage calculation, defense mitigation, and range math have one owner — the
+alternative would be attack logic in one class and defense logic in another with
+no clear place for the mitigation formula.
 """
 
 import random
 
 
 class Action:
-    """Base class for actions"""
+    """
+    Base interface that all actions share.
+
+    The energy_cost field and can_execute() check live here because every
+    action must gate on available energy — the cost differs by action, but
+    the enforcement pattern is the same for all of them.
+    """
     
     def __init__(self, name, energy_cost):
         self.name = name
         self.energy_cost = energy_cost
     
     def can_execute(self, dot, world_state):
-        """Check if action can be executed"""
+        """Returns True when the dot has enough energy. Called before execute() to prevent unaffordable actions."""
         return dot.resources.energy >= self.energy_cost
     
     def execute(self, dot, world_state, delta_time):
-        """Execute the action"""
+        """Override point for action-specific logic. Raises NotImplementedError to force subclass implementation."""
         raise NotImplementedError
 
 
 class AttackAction(Action):
-    """Attack another dot"""
+    """
+    Combat for dots that have invested in the attack gene.
+
+    Lives as a class because attack involves attacker DNA (damage, range) and
+    defender DNA (damage reduction), and co-locating those calculations prevents
+    them from drifting independently when either formula changes.
+    """
     
     def __init__(self, dna_profile):
         self.dna = dna_profile
@@ -35,7 +50,13 @@ class AttackAction(Action):
         super().__init__("attack", energy_cost)
     
     def calculate_range(self):
-        """Attack range from DNA"""
+        """
+        Returns melee range in pixels.
+
+        Scales with gene points so attack-gene investment increases reach —
+        a distinct tactical advantage from damage that makes the gene worth
+        more than just its damage output.
+        """
         if not self.dna.attack.enabled:
             return 0
         
@@ -44,7 +65,13 @@ class AttackAction(Action):
         return base + bonus
     
     def calculate_damage(self):
-        """Damage dealt from DNA"""
+        """
+        Returns base damage before defense mitigation.
+
+        Scales with gene points so high-investment attackers deal meaningfully
+        more damage — the gene must produce a real payoff to be worth the
+        budget cost in the DNA allocation system.
+        """
         if not self.dna.attack.enabled:
             return 0
         
@@ -53,7 +80,12 @@ class AttackAction(Action):
         return base + bonus
     
     def can_execute(self, dot, world_state):
-        """Can attack if gene enabled and energy available"""
+        """
+        Attack gene must be present and energy must cover the 5% cost.
+
+        Without the energy check, low-energy dots could attempt attacks they
+        cannot afford, accelerating their own starvation.
+        """
         if not self.dna.attack.enabled:
             return False
         
@@ -61,7 +93,11 @@ class AttackAction(Action):
         return dot.resources.energy >= cost
     
     def execute(self, dot, target_dot, delta_time):
-        """Execute attack on target"""
+        """
+        Applies damage to target. The 5% miss chance prevents combat from
+        being purely deterministic — the randomness mirrors the uncertainty
+        of real-world fights and keeps attack from being a guaranteed trade.
+        """
         # 5% probabilistic failure
         if random.random() < 0.05:
             return {"result": "MISS", "damage": 0}
@@ -87,7 +123,13 @@ class AttackAction(Action):
 
 
 class DefendAction(Action):
-    """Defensive stance - reduces incoming damage"""
+    """
+    Manages the defending state that reduces incoming damage.
+
+    Separated from Dot because the mitigation formula combines the defender's
+    gene points with the incoming damage value — both sides of that equation
+    are only meaningful together, and this class is where they meet.
+    """
     
     def __init__(self, dna_profile):
         self.dna = dna_profile
@@ -95,7 +137,12 @@ class DefendAction(Action):
         super().__init__("defend", 0)  # Cost is per-second
     
     def calculate_reduction(self):
-        """Damage reduction percentage"""
+        """
+        Returns the fraction of incoming damage this dot blocks.
+
+        Capped at 80% so even max-invest defenders cannot become invulnerable —
+        a gap that keeps attacking viable against heavily-defended opponents.
+        """
         if not self.dna.defend.enabled:
             return 0
         
@@ -104,7 +151,11 @@ class DefendAction(Action):
         return min(0.8, base + bonus)  # Cap at 80%
     
     def can_execute(self, dot, world_state):
-        """Can defend if gene enabled and energy available"""
+        """
+        Defend drains 3% max-energy/second, so critically low-energy dots
+        cannot sustain a stance. This makes fleeing more viable than defending
+        indefinitely when energy runs out.
+        """
         if not self.dna.defend.enabled:
             return False
         
@@ -112,7 +163,12 @@ class DefendAction(Action):
         return dot.resources.energy >= cost
     
     def execute(self, dot, world_state, delta_time):
-        """Activate defensive stance"""
+        """
+        Deducts per-second energy cost and sets the defending flag.
+
+        The flag is what receive_damage() checks for mitigation — the cost
+        is deducted here so each tick of defending has a real energy price.
+        """
         # Energy cost: 3% per second
         cost = dot.resources.max_energy * 0.03 * delta_time
         dot.resources.deplete_energy(cost)
@@ -122,14 +178,24 @@ class DefendAction(Action):
 
 
 class ReplicateAction(Action):
-    """Reproduction - both sexual and asexual modes"""
+    """
+    Manages both reproduction modes under one gene.
+
+    The asexual path exists as a fallback when no suitable mate is within range
+    — it costs more energy but doesn’t depend on another dot’s cooperation,
+    so population growth doesn’t stall when the population is sparse.
+    """
     
     def __init__(self, dna_profile):
         self.dna = dna_profile
         super().__init__("replicate", 0)  # Cost varies by mode
     
     def can_execute_asexual(self, dot):
-        """Can do asexual reproduction if energy > 80%"""
+        """
+        Asexual requires 80% energy because producing a clone is expensive —
+        the offspring inherits the full genome and the parent must be thriving
+        to afford the investment without dying from the energy drain.
+        """
         if not self.dna.replicate.enabled:
             return False
         
@@ -137,7 +203,11 @@ class ReplicateAction(Action):
         return dot.resources.energy >= threshold and dot.resources.health > 70
     
     def can_execute_sexual(self, dot):
-        """Can do sexual reproduction if energy > 40%"""
+        """
+        Sexual only requires 40% energy because the cost is split between two
+        parents — each contributes a smaller share, making sexual reproduction
+        accessible at lower resource levels than asexual.
+        """
         if not self.dna.replicate.enabled:
             return False
         
@@ -145,11 +215,11 @@ class ReplicateAction(Action):
         return dot.resources.energy >= threshold and dot.resources.health > 70
     
     def can_execute(self, dot, world_state):
-        """Can replicate (either mode) if gene enabled and minimum energy met"""
+        """True if either reproduction mode is currently affordable — sexual is preferred but asexual is the fallback."""
         return self.can_execute_sexual(dot) or self.can_execute_asexual(dot)
     
     def execute(self, dot, world_state, delta_time, mate=None):
-        """Create offspring - sexual if mate provided, asexual otherwise"""
+        """Routes to sexual or asexual reproduction depending on whether a mate was provided."""
         from .dna import DNAProfile
         from .dot import Dot
         
@@ -161,7 +231,12 @@ class ReplicateAction(Action):
             return self.execute_asexual(dot, world_state)
     
     def execute_sexual(self, parent_a, parent_b, world_state):
-        """Sexual reproduction with DNA crossover"""
+        """
+        Crossover two parent genomes and produce offspring.
+
+        Spawn position is midpoint ± random offset so the child starts near
+        where its parents met rather than at an arbitrary world coordinate.
+        """
         from .dna import DNAProfile
         
         # Energy cost: 40% each parent
@@ -204,7 +279,12 @@ class ReplicateAction(Action):
         }
     
     def execute_asexual(self, dot, world_state):
-        """Asexual reproduction (clone with mutations)"""
+        """
+        Clone the parent with mutations and deduct the steep energy cost.
+
+        The 80% energy drain ensures asexual reproduction is a meaningful
+        sacrifice rather than a cheap shortcut to population growth.
+        """
         from .dna import DNAProfile
         
         # Energy cost: 80%
@@ -232,7 +312,15 @@ class ReplicateAction(Action):
         }
     
     def mutate_dna(self, parent_dna, mutation_rate=0.1, mutation_amount=5):
-        """Create mutated copy of parent DNA"""
+        """
+        Produces a mutated clone of the parent genome.
+
+        Both point values and enabled flags are subject to random change so
+        asexual offspring can discover new gene configurations, not just
+        reproduce the parent’s allocation with minor numerical variation.
+        The budget validation at the end ensures no invalid genome leaves
+        the mutation step.
+        """
         from .dna import DNAProfile
         
         # Clone parent DNA
@@ -268,7 +356,13 @@ class ReplicateAction(Action):
 
 
 class ActionManager:
-    """Manages all available actions for a dot"""
+    """
+    Assembles the action objects for one dot from its DNA.
+
+    Exists so each dot gets its own action instances with pre-computed gene
+    values rather than recalculating range and damage every tick. The manager
+    also provides the canonical list of executable actions for the UI and logger.
+    """
     
     def __init__(self, dna_profile):
         self.dna = dna_profile
@@ -279,7 +373,7 @@ class ActionManager:
         self.replicate = ReplicateAction(dna_profile)
     
     def get_available_actions(self, dot, world_state):
-        """Get list of actions that can currently be executed"""
+        """Returns the subset of actions currently affordable for this dot, for display or logging."""
         available = []
         
         if self.attack.can_execute(dot, world_state):

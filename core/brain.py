@@ -1,23 +1,31 @@
 """
-Brain System - Cognitive Processing
-Handles memory, decision-making, and age-gated capacity growth
+The brain is separated from Dot because cognitive capacity is a genetic trait
+that scales with both DNA investment and age. Any system that needs to know a
+dot's memory limit or slot counts reads from Brain, so the capacity formula has
+exactly one owner. Computing it inside Dot would couple cognitive growth to agent
+logic and make the formula impossible to profile or tune independently.
 """
+
+from configs import get_config
 
 class Brain:
     """
-    Manages dot's cognitive abilities
-    - Age-gated capacity growth
-    - Memory management
-    - Sense/action slot calculation
+    Tracks cognitive resources and experience for one dot.
+
+    Age-gated capacity exists because a dot that has survived longer has had
+    more time to develop — this prevents newly-spawned dots from being
+    cognitively equal to veterans and gives longevity a measurable advantage
+    beyond just accumulating more food.
     """
     
     def __init__(self, dna_profile, age=0.0):
         self.dna = dna_profile
         self.age = age  # In seconds
         
-        # Capacity parameters
-        self.base_capacity = 100
-        self.growth_rate = 2.0  # DNA points per second of age (increased for Phase 4 memory)
+        # Capacity parameters (read from config at construction time)
+        _bcfg = get_config().brain
+        self.base_capacity = _bcfg.base_capacity
+        self.growth_rate = _bcfg.growth_rate
         
         # Calculated values
         self.capacity = self.calculate_capacity()
@@ -27,7 +35,7 @@ class Brain:
         
         # Memory storage - Phase 4 implementation
         self.memories = []  # List of interaction memories
-        self.max_memories = 50  # Keep last 50 memories
+        self.max_memories = get_config().brain.max_memories
         
         # Reward tracking - Phase 4 intelligence (DNA growth via eating)
         self.total_reward = 0.0  # Cumulative reward score
@@ -35,59 +43,70 @@ class Brain:
     
     def calculate_capacity(self):
         """
-        Age-gated brain capacity
-        Formula: 100 + (age_seconds * 1.5)
+        Returns current cognitive capacity.
+
+        Grows with age so surviving longer yields measurably better cognition,
+        creating a selection pressure for strategies that extend lifespan rather
+        than strategies that reproduce quickly and die young.
         """
         return self.base_capacity + (self.age * self.growth_rate)
     
     def calculate_memory_slots(self):
         """
-        Memory slots based on DNA and age
-        Base: 10
-        DNA Bonus: gene_points * 0.5
-        Age Bonus: age_seconds * 0.5
+        Returns how many memories this dot can store.
+
+        DNA provides the genetic ceiling, age provides accumulated experience.
+        Both contribute because a dot with strong memory genes but a short life
+        still learns less than one that survives long enough to use those genes.
         """
         if not self.dna.brain_memory.enabled:
             return 0
         
-        base = 10
-        dna_bonus = self.dna.brain_memory.points * 0.5
-        age_bonus = self.age * 0.5
+        _bcfg = get_config().brain
+        base = _bcfg.memory_slot_base
+        dna_bonus = self.dna.brain_memory.points * _bcfg.memory_slot_dna_scale
+        age_bonus = self.age * _bcfg.memory_slot_age_scale
         
         return int(base + dna_bonus + age_bonus)
     
     def calculate_sense_slots(self):
         """
-        Sense slots based on DNA
-        Base: 2
-        DNA Bonus: gene_points * 0.1
+        Returns how many sense channels are active.
+
+        Determined by DNA alone (not age) because perception is structural —
+        a dot either has the neural architecture for extended sensing or it
+        doesn't, regardless of how long it has lived.
         """
         if not self.dna.brain_sense_slots.enabled:
             return 0
         
-        base = 2
-        dna_bonus = self.dna.brain_sense_slots.points * 0.1
+        _bcfg = get_config().brain
+        base = _bcfg.sense_slot_base
+        dna_bonus = self.dna.brain_sense_slots.points * _bcfg.sense_slot_dna_scale
         
         return int(base + dna_bonus)
     
     def calculate_action_slots(self):
         """
-        Action slots based on DNA
-        Base: 2
-        DNA Bonus: gene_points * 0.1
+        Returns how many distinct action types this dot can consider.
+
+        Like sense slots, action capacity is structural (DNA only) because
+        the repertoire of possible actions a dot can plan for is set by its
+        gene layout, not by its experience.
         """
         if not self.dna.brain_action_slots.enabled:
             return 0
         
-        base = 2
-        dna_bonus = self.dna.brain_action_slots.points * 0.1
+        _bcfg = get_config().brain
+        base = _bcfg.action_slot_base
+        dna_bonus = self.dna.brain_action_slots.points * _bcfg.action_slot_dna_scale
         
         return int(base + dna_bonus)
     
     def update_age(self, delta_time):
         """
-        Update age and recalculate all age-dependent values
-        Called every frame
+        Advances age and recalculates capacity so cognitive growth is continuous
+        rather than stepping at discrete milestones.
         """
         self.age += delta_time
         
@@ -98,20 +117,22 @@ class Brain:
     
     def can_allocate_dna(self, points):
         """
-        Check if brain has capacity for additional DNA points
-        Used when dots gain DNA from eating
+        Guards DNA growth by checking remaining cognitive room.
+
+        Earned DNA only converts to genetic capacity when the brain has room
+        to process it — this prevents runaway DNA inflation in dots that have
+        outgrown their cognitive architecture.
         """
         current_allocation = self.dna.get_allocated_points()
         return (current_allocation + points) <= self.capacity
     
     def add_memory(self, memory_type, data, reward_impact):
         """
-        Add a memory of an interaction/event
-        
-        Args:
-            memory_type: Type of memory ('attack', 'defend', 'reproduce', 'eat', etc.)
-            data: Dict with memory details (target_id, outcome, etc.)
-            reward_impact: Float reward/penalty from this memory
+        Records an experience in the memory buffer.
+
+        FIFO eviction (pop from index 0) keeps the most recent experiences
+        current rather than burying them under ancient history from juvenile
+        behavior that may no longer reflect the dot's circumstances.
         """
         memory = {
             'type': memory_type,
@@ -128,13 +149,10 @@ class Brain:
     
     def add_reward(self, action_type, reward_value):
         """
-        Track rewards for actions taken
-        
-        Phase 4: Reward tracking for learning (DNA growth now via eating)
-        
-        Args:
-            action_type: Type of action ('attack', 'replicate', 'seek_food', etc.)
-            reward_value: Reward/penalty amount
+        Accumulates action outcome data for lifetime analysis.
+
+        The reward history lets the generation summary identify which actions
+        were profitable for this dot without needing to replay the simulation.
         """
         self.total_reward += reward_value
         
@@ -144,9 +162,11 @@ class Brain:
     
     def get_action_success_rate(self, action_type):
         """
-        Calculate success rate for an action based on memory
-        
-        Returns: Float between 0.0-1.0 representing success rate
+        Aggregates memory into a success ratio for one action type.
+
+        Returns 0.5 (neutral) when no data exists so callers treat unknown
+        actions as neither promising nor dangerous rather than pessimistically
+        avoiding them.
         """
         relevant_memories = [m for m in self.memories if m['type'] == action_type]
         
@@ -159,16 +179,17 @@ class Brain:
     
     def get_memory_of_dot(self, dot_id):
         """
-        Retrieve memories involving a specific dot
-        
-        Returns: List of memory dicts
+        Retrieves all memories of interactions with a specific dot.
+
+        Used to check combat or mate history before committing to an action
+        with a dot already encountered, so prior outcomes can inform the decision.
         """
         return [m for m in self.memories 
                 if m['data'].get('target_id') == dot_id or 
                    m['data'].get('partner_id') == dot_id]
     
     def serialize(self):
-        """Export brain state"""
+        """Snapshot for the renderer and logger. Excludes raw memory objects to keep output serializable."""
         return {
             'age': self.age,
             'capacity': self.capacity,
